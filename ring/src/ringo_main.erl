@@ -10,14 +10,32 @@
 
 conf(P) ->
         case application:get_env(P) of
-                undefined -> exit(["Specify ", P]);
+                undefined -> error_logger:error_report(
+                        [{"Parameter missing", P}]),
+                        exit(normal);
                 {ok, Val} -> Val
+        end.
+
+parse_path([Id|_]) -> Id;
+parse_path(_) -> error_logger:error_report(
+                {"Invalid ringo_home path", conf(ringo_home)}),
+                 exit(normal).
+
+check_nodename(Id) ->
+        [T|_] = string:tokens(atom_to_list(node()), "@"),
+        E = "ringo-" ++ Id,
+        if T =/= E ->
+                error_logger:error_report(
+                        {"Node name should be", E, "not", T}),
+                exit(normal);
+        true -> ok
         end.
 
 start(_Type, _Args) ->
         Home = conf(ringo_home),
-        [Id|_] = lists:reverse(string:tokens(Home, "/")),
-        supervisor:start_link(ringo_main, [Id]).
+        Id = parse_path(lists:reverse(string:tokens(Home, "/"))),
+        check_nodename(Id),
+        supervisor:start_link(ringo_main, [erlang:list_to_integer(Id, 16)]).
 
 init([Id]) -> 
         error_logger:info_report([{"RINGO NODE", Id, "BOOTS"}]),
