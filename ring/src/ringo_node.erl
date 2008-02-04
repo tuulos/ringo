@@ -32,6 +32,7 @@
 %%%
 
 -module(ringo_node).
+-behaviour(gen_server).
 
 -export([start_link/1, check_ring_route/0, check_parallel_rings/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
@@ -97,6 +98,9 @@ handle_call(get_ring_route, _From, #rnode{route = Ring} = R) ->
 handle_call(new_ring_route, _From, R) ->
         spawn_link(fun() -> record_ring_route(R) end),
         {reply, ok, R};
+
+handle_call(get_previous, _From, #rnode{prevnode = {Prev} = R) ->
+        {reply, {ok, Prev}, R};
 
 %%% Place a node in the ring.
 %%% Consider the following setting: X -> N -> Y
@@ -521,4 +525,4 @@ kill_parallel_ring(RingA, RingB) ->
 
 terminate(_Reason, _State) -> {}.
 
-code_change(_OldVsn, State, _Extra) -> {ok, State}.              
+code_change(_OldVsn, State, _Extra) -> {ok, State}.
