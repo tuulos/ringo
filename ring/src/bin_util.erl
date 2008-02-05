@@ -1,17 +1,17 @@
 -module(bin_util).
--export([member32/2, to_list32/1]).
+-export([member64/2, to_list64/1]).
 
-member32(Bin, Val) when is_binary(Bin), is_integer(Val) ->
-        find32(Bin, <<Val:32>>);
+member64(Bin, Val) when is_binary(Bin), is_integer(Val) ->
+        find64(Bin, <<Val:64>>);
 
-member32(Bin, Val) when is_binary(Bin), is_binary(Val) ->
-        member32_1(Bin, Val).
+member64(Bin, Val) when is_binary(Bin), is_binary(Val) ->
+        member64_1(Bin, Val).
 
-member32_1(<<>>, _) -> false;
-member32_1(<<X:4/binary, _/binary>>, Val) when X == Val -> true;
-member32_1(<<_:4/binary, R/binary>>, Val) -> find32_1(R, Val).
+member64_1(<<>>, _) -> false;
+member64_1(<<X:8/binary, _/binary>>, Val) when X == Val -> true;
+member64_1(<<_:8/binary, R/binary>>, Val) -> find64_1(R, Val).
 
-to_list32(B) -> to_list32(B, []).
-to_list32(<<X:32,R/binary>>, Res) -> to_list32(R, [X|Res]);
-to_list32(<<>>, Res) -> Res.
+to_list64(B) -> to_list64(B, []).
+to_list64(<<X:64,R/binary>>, Res) -> to_list64(R, [X|Res]);
+to_list64(<<>>, Res) -> Res.
 

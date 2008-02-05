@@ -41,7 +41,13 @@
 
 % what if the domain is closed (don't make the DB read-only)
 
-% What happens with duplicate SyncIDs?
+% What happens with duplicate SyncIDs? -- Collisions should be practically
+% impossible when using 64bit SyncIDs (Time + Random). However, a duplicate
+% syncid doesn't break anything, it just prevents re-syncing from succeeding.
+%
+% Note that duplicate SyncIDs doesn't matter per se. They become an issue
+% only if an entry with an already existing SyncID wasn't replicated correctly
+% and it must be re-synced afterwards. If it's replicated ok, everything's ok.
 
 
 -module(ringo_store).

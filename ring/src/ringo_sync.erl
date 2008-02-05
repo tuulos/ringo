@@ -1,5 +1,13 @@
 -module(ringo_sync).
 
+-export([make_leaf_hashes_and_ids/1, make_leaf_hashes/1,
+         make_leaf_hashes/3, build_merkle_tree/1,
+         sync_id/2, update_leaf_ids/2, update_leaf_hashes/3,
+         collect_leaves/2, in_leaves/2, diff_parents/3,
+         pick_children/3]).
+
+-define(NUM_MERKLE_LEAVES, 8192).
+
 %%%
 %%% 
 %%%
@@ -14,11 +22,11 @@
 make_leaf_hashes_and_ids(DBName) ->
         LeafIDs = dict:from_list(
                 [{I, <<>>} || I <- lists:seq(0, ?NUM_MERKLE_LEAVES - 1)]),
-        make_leaf_hashes(DBName, fun(Leaf, SyncID, LeafIDs) ->
-                Lst = dict:fetch(Leaf, LeafIDs),
+        make_leaf_hashes(DBName, fun(Leaf, SyncID, LLeafIDs) ->
+                Lst = dict:fetch(Leaf, LLeafIDs),
                 % Binary append should be fast in R12B. This might be REALLY
                 % slow on earlier revisions (see Erlang Efficiency Guide).
-                dict:store(Leaf, <<Lst/binary, SyncID/binary>>)
+                dict:store(Leaf, <<Lst/binary, SyncID/binary>>, LLeafIDs)
                 % to see that the append-optimization relly works, use the 
                 % inserted value for matching here, which should force the
                 % binary to be copied. If the function becomes considerably
@@ -26,10 +34,10 @@ make_leaf_hashes_and_ids(DBName) ->
         end, LeafIDs).
 
 make_leaf_hashes(DBName) ->
-        {Tree, _} = make_entry_hashes(DBName, none, []),
-        Tree.
+        {LeafHashes, _} = make_leaf_hashes(DBName, none, []),
+        LeafHashes.
 
-make_leaf_hashes((DBName, F, Acc0) ->
+make_leaf_hashes(DBName, F, Acc0) ->
         Z = zlib:open(),
         LeafHashes = ets:new(leaves, []),
         % create the leaves
@@ -42,7 +50,7 @@ make_leaf_hashes((DBName, F, Acc0) ->
                         F(Leaf, SyncID, Acc);
                 true -> ok
                 end
-        end, DBName, Acc0),
+        end, Acc0, DBName),
         zlib:close(Z),
         {LeafHashes, AccF}.
 
@@ -54,11 +62,12 @@ build_merkle_tree(LeafHashes) ->
         Tree.
 
 update_leaf_hashes(Z, LeafHashes, SyncID) ->
+        Leaf = sync_id_slot(SyncID),
         [{_, P}] = ets:lookup(LeafHashes, Leaf),
         X = zlib:crc32(Z, P, SyncID),
         ets:insert(LeafHashes, {Leaf, X}).
 
-update_leaf_ids(Z, LeafIDs, SyncID) ->
+update_leaf_ids(LeafIDs, SyncID) ->
         Leaf = sync_id_slot(SyncID),
         Lst = dict:fetch(Leaf, LeafIDs),
         dict:store(Leaf, <<Lst/binary, SyncID/binary>>).
@@ -66,19 +75,18 @@ update_leaf_ids(Z, LeafIDs, SyncID) ->
 in_leaves(LeafIDs, SyncID) ->
         Leaf = sync_id_slot(SyncID),
         Lst = dict:fetch(Leaf, LeafIDs),
-        bin_util:member32(Lst, SyncID).
+        bin_util:member64(Lst, SyncID).
 
 sync_id(EntryID, Time) ->
         % SyncID must have lots of entropy in the least significant
         % bits to ensure uniform allocation of the Merkle leaves
-        SyncID = EntryID bxor Time,
-        Leaf = SyncID band (?NUM_MERKLE_LEAVES - 1),
-        {Leaf, <<SyncID:32>>}.
+        Leaf = EntryID band (?NUM_MERKLE_LEAVES - 1),
+        {Leaf, <<Time:32, EntryID:32>>}.
 
-sync_id_slot(<<SyncID:32>>) ->
-        SyncID band (?NUM_MERKLE_LEAVES - 1).
+sync_id_slot(<<_Time:32, EntryID:32>>) ->
+        EntryID band (?NUM_MERKLE_LEAVES - 1).
 
-make_next_level(_, [_ Tree) -> Tree;
+make_next_level(_, [_], Tree) -> Tree;
 make_next_level(Z, Level, Tree) ->
         L = make_level(Z, Level, []),
         make_next_level(Z, L, [L|Tree]).
@@ -100,7 +108,7 @@ diff(_, [], Res) ->
 diff([{N1, _}|_], [{N2, _}|_], Res) when N1 > N2 ->
         Res;
 diff([{N1, _}|R1], [{N2, _}|_] = L2, Res) when N1 < N2 ->
-        diff(R1, L2);
+        diff(R1, L2, Res);
 diff([{N1, X1}|R1], [{_, X2}|R2], Res) when X1 =/= X2 ->
         diff(R1, R2, [N1|Res]);
 diff([_|R1], [_|R2], Res) ->
@@ -111,7 +119,7 @@ diff([_|R1], [_|R2], Res) ->
 %%%
 
 pick_children(H, Parents, Tree) ->
-        Level = lists:zip(lists:seq(1, 1 bsl H), lists:nth(H, OTree)),
+        Level = lists:zip(lists:seq(1, 1 bsl H), lists:nth(H, Tree)),
         pick(Level, Parents, 1, []).
 
 pick(_, [], _, Res) ->
@@ -128,13 +136,12 @@ pick([_, _|Level], Parents, N, Res) ->
 collect_leaves([], _) -> [];
 collect_leaves(LeafList, DBName) ->
         Z = zlib:open(),
-        % SyncID collision theoretically possible, need a duplicate_bag
-        LeafBag = ets:new(leaves, [duplicate_bag]),
+        LeafBag = ets:new(leaves, [bag]),
         ets:insert(LeafBag, [{N, x} || N <- LeafList]),
         ringo_reader:fold(fun(_, _, _, {Time, EntryID}, _, _) ->
-                {Leaf, SyncID} = X = sync_id(EntryID, Time),
+                {Leaf, _SyncID} = X = sync_id(EntryID, Time),
                 case ets:member(LeafBag, Leaf) of
-                        true -> ets:insert(LeafBag, X),
+                        true -> ets:insert(LeafBag, X);
                         false -> ok
                 end
         end, DBName, ok),

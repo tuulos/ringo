@@ -1,6 +1,6 @@
 -module(ringo_reader).
 
--export([fold/3]).
+-export([fold/3, read_external/3]).
 -include("ringo_store.hrl").
 
 -define(NI, :32/little).
@@ -23,14 +23,14 @@ read_item(#iter{f = F, prev = Prev, acc = Acc} = Q) ->
         {Time, EntryID, Flags, Key, Val, Entry} = read_entry(Q),
         ID = {Time, EntryID},
         % skip duplicate items
-        if Prev == ID ->
+        if Prev == EntryID ->
                 AccN = Acc;
         true ->
                 % callback function may throw(eof) if it wants
                 % to stop iterating
                 AccN = F(Key, Val, parse_flags(Flags), ID, Entry, Acc)
         end,
-        read_item(Q#iter{prev = ID, acc = AccN}).
+        read_item(Q#iter{prev = EntryID, acc = AccN}).
 
 read_entry(Q) ->
         read_head(Q, read(Q, 8)).
@@ -94,3 +94,13 @@ read(#iter{db = DB} = Q, N) ->
 parse_flags(Flags) ->
         [S || {S, F} <- ?FLAGS, Flags band F > 0].
 
+read_external(Home, Z, <<CRC:32, ExtFile/binary>>) ->
+        ExtPath = filename:join(Home, binary_to_list(ExtFile)),
+        case file:read_file(ExtPath) of
+                {error, Reason} -> {io_error, Reason};
+                {ok, Value} ->
+                        V = zlib:crc32(Z, Value),
+                        if V == CRC -> {ok, Value};
+                        true -> corrupted_file
+                        end
+        end.
