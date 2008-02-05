@@ -51,24 +51,21 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
         terminate/2, code_change/3]).
 
--define(?KEY_MAX, 4096).
--define(?VAL_INTERNAL_MAX, 4096). 
--define(?DOMAIN_CHUNK_MAX, 104857600). % 100MB
--define(?RDONLY, 8#00400).
--define(?SYNC_BUF_MAX_WORDS, 1000000).
+-include("ringo_store.hrl").
 
--define(?MAX_RING_SIZE, 1000000).
--define(?RESYNC_INTERVAL, 30000). % make this longer!
--define(?GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
+-define(DOMAIN_CHUNK_MAX, 104857600). % 100MB
+-define(SYNC_BUF_MAX_WORDS, 1000000).
+
+-define(MAX_RING_SIZE, 1000000).
+-define(RESYNC_INTERVAL, 30000). % make this longer!
+-define(GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
 
 % replication
--define(?NREPLICAS, 3).
--define(?MAX_TRIES, 3).
--define(?REPL_TIMEOUT, 2000).
+-define(NREPLICAS, 3).
+-define(MAX_TRIES, 3).
+-define(REPL_TIMEOUT, 2000).
 
--include_lib("kernel/include/file.hrl").
--record(domain, {this, owner, home, host, id, z, db, size,
-        sync_tree, sync_ids, sync_inbox, sync_outbox}).
+%-include_lib("kernel/include/file.hrl").
 
 start(Home, DomainID, IsOwner) ->
         case gen_server:start(ringo_domain, 
@@ -375,7 +372,6 @@ close_domain(DomainID, Home, DB) ->
 
 put_item(Request, EntryID, #domain{db = DB}) ->
         {ok, Entry, NewSize} = ringo_writer:add_entry(DB, EntryID, Key, Value),
-
         try_put_item(Entry, EntryID, 0).
 
 try_put_item(_, EntryID, ?MAX_TRIES) ->
