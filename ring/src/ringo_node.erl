@@ -58,6 +58,8 @@ start_link(Id) ->
 
 
 init([Id]) ->
+        {A1, A2, A3} = now(),
+        random:seed(A1, A2, A3),
         RTime = round(?RING_ROUTE_INTERVAL / 1000 + random:uniform(10000)),
         {ok, _T1} = timer:apply_interval(RTime, 
                 ringo_node, check_ring_route, []),
@@ -65,6 +67,7 @@ init([Id]) ->
         {ok, _T2} = timer:apply_interval(PTime,
                 ringo_node, check_parallel_rings, []),
 
+        ets:new(domain_table, [named_table]),
         {ok, #rnode{myid = Id, previd = Id, nextid = Id, prevnode = node(),
                     nextnode = node(), route = {now(), []}}}.
 
@@ -102,6 +105,9 @@ handle_call(new_ring_route, _From, R) ->
 handle_call(get_previous, _From, #rnode{prevnode = {Prev} = R) ->
         {reply, {ok, Prev}, R};
 
+handle_call(get_next, _From, #rnode{nextnode = {Next} = R) ->
+        {reply, {ok, Next}, R};
+
 %%% Place a node in the ring.
 %%% Consider the following setting: X -> N -> Y
 %%% where N is the new node, X its predecessor and Y its successor.
@@ -127,6 +133,7 @@ handle_call({assign_node, NewPrev, NewPrevID, none, none}, _From,
 handle_call({assign_node, none, none, NewNext, NewNextID}, _From,
         #rnode{myid = MyID, nextnode = OldNext} = R) ->
         
+        kill_domains(),
         monitor_node(OldNext, false),
         monitor_node(NewNext, true),
         {reply, {ok, MyID}, R#rnode{nextid = NewNextID, nextnode = NewNext}};
@@ -139,6 +146,7 @@ handle_call({assign_node, NewPrev, NewPrevID, NewNext, NewNextID}, _From,
         {ok, NewNextID} = gen_server:call({ringo_node, NewNext},
                 {assign_node, node(), MyID, none, none}, 250),
         
+        kill_domains(),
         monitor_node(OldNext, false),
         monitor_node(NewNext, true),
 
@@ -164,19 +172,24 @@ handle_cast({kill_node, Reason}, RNode) ->
         error_logger:warning_report({"Kill node requested", Reason}),
         {stop, node_killed, RNode};
 
+handle_cast({{domain, DomainID}, Msg}, R) ->
+        domain_dispatch(DomainID, false, Msg),
+        {noreply, R};
+
 % Length(Ring) > 0 check ensures that no operation is performed until the
 % node is a valid member of the ring.
 handle_cast({match, ReqID, Op, From, Args} = Req, 
-        #rnode{route = {_, Ring}} = R) when length(Ring) > 0 ->
+        #rnode{route = {_, Ring}} = R) when Ring =/= [] ->
         
         Match = match(ReqID, R),
-        if Match ->
-                spawn_link(fun() -> op(Op, Args, From, ReqID, R) end),
-                {noreply, R};
+        if Match, Op == domain ->
+                domain_dispatch(ReqID, true, Args);
+        Match ->
+                spawn_link(fun() -> op(Op, Args, From, ReqID, R) end);
         true ->
-                gen_server:cast({ringo_node, R#rnode.nextnode}, Req),
-                {noreply, R}
-        end;
+                gen_server:cast({ringo_node, R#rnode.nextnode}, Req)
+        end,
+        {noreply, R};
 
 handle_cast({match, _ReqID, _Op, _From, _Args}, R) ->
         {noreply, R}.
@@ -202,6 +215,28 @@ handle_info({nodedown, Node}, R) ->
         error_logger:info_report({"Unknown node", Node, "down"}),
         {noreply, R}.
 
+%%%
+%%%
+%%%
+
+domain_dispatch(DomainID, IsOwner, Msg) ->
+        {Alive, S} = case ets:lookup(domain_table, DomainID) of
+                [] -> {false, none};
+                [{_, S}] -> {is_process_alive(S), S};
+        end,
+        if Alive -> 
+                Server = S;
+        true ->
+                {ok, Server} = ringo_domain:start(Home, DomainID, IsOwner),
+                ets:insert(domain_table, {DomainID, Server})
+        end,
+        gen_server:cast(Server, Msg),
+        {noreply, R}.
+
+kill_domains() ->
+        [gen_server:cast(S, {kill_domain, "ring changes"}) || 
+                {_, S} <- ets:tab2list(domain_table)],
+        ets:delete_all_objects(domain_table).
 
 %%% A new node at From wants to join the ring. This node should become
 %%% its predecessor and this node's successor becomes its successor.
