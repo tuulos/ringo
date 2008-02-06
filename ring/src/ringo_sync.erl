@@ -2,7 +2,7 @@
 
 -export([make_leaf_hashes_and_ids/1, make_leaf_hashes/1,
          make_leaf_hashes/3, build_merkle_tree/1,
-         sync_id/2, update_leaf_ids/2, update_leaf_hashes/3,
+         sync_id/2, sync_id_slot/1, update_leaf_ids/2, update_leaf_hashes/3,
          collect_leaves/2, in_leaves/2, diff_parents/3,
          pick_children/3]).
 
@@ -56,7 +56,7 @@ make_leaf_hashes(DBName, F, Acc0) ->
 
 build_merkle_tree(LeafHashes) ->
         Z = zlib:open(),
-        Leaves = [X || {_, X} <- ets:tab2list(LeafHashes)],
+        {_, Leaves} = lists:unzip(lists:sort(ets:tab2list(LeafHashes))),
         Tree = make_next_level(Z, Leaves, [Leaves]),
         zlib:close(Z),
         Tree.
@@ -91,7 +91,7 @@ make_next_level(Z, Level, Tree) ->
         L = make_level(Z, Level, []),
         make_next_level(Z, L, [L|Tree]).
 
-make_level(_, [], L) -> L;
+make_level(_, [], L) -> lists:reverse(L);
 make_level(Z, [X, Y|R], L) ->
         make_level(Z, R, [zlib:crc32(Z, <<X:32, Y:32>>)|L]).
 
@@ -100,11 +100,12 @@ make_level(Z, [X, Y|R], L) ->
 %%%
 
 diff_parents(H, RLevel, OTree) ->
-        OLevel = lists:zip(lists:seq(1, 1 bsl H), lists:nth(H, OTree)),
+        OLevel = lists:zip(lists:seq(1, 1 bsl (H - 1)), lists:nth(H, OTree)),
+        %io:fwrite("Rlevel ~w OLevel ~w~n", [RLevel, OLevel]),
         diff(OLevel, RLevel, []).
 
 diff(_, [], Res) ->
-        Res;
+        lists:reverse(Res);
 diff([{N1, _}|_], [{N2, _}|_], Res) when N1 > N2 ->
         Res;
 diff([{N1, _}|R1], [{N2, _}|_] = L2, Res) when N1 < N2 ->
@@ -119,13 +120,13 @@ diff([_|R1], [_|R2], Res) ->
 %%%
 
 pick_children(H, Parents, Tree) ->
-        Level = lists:zip(lists:seq(1, 1 bsl H), lists:nth(H, Tree)),
+        Level = lists:zip(lists:seq(1, 1 bsl (H - 1)), lists:nth(H, Tree)),
         pick(Level, Parents, 1, []).
 
 pick(_, [], _, Res) ->
-        Res;
+        lists:reverse(Res);
 pick([X, Y|Level], [P|Parents], N, Res) when N == P ->
-        pick(Level, Parents, N + 1, [X, Y|Res]);
+        pick(Level, Parents, N + 1, [Y, X|Res]);
 pick([_, _|Level], Parents, N, Res) ->
         pick(Level, Parents, N + 1, Res).
 

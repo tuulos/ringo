@@ -423,9 +423,9 @@ resync(#domain{owner = true} = D) ->
 % Replica-end in synchronization -- the active party
 resync(#domain{this = This, id = DomainID, host = Host, home = Home} = D) ->
         register(resync, self()),
-        [Root|Tree] = update_sync_tree(D),
+        [[Root]|Tree] = update_sync_tree(D),
         {ok, Owner, Distance} = find_owner(DomainID),
-        DiffLeaves = merkle_sync({1, Root}, 1, Tree),
+        DiffLeaves = merkle_sync([{1, Root}], 1, Tree),
         if DiffLeaves == [] -> ok;
         true ->
                 SyncIDs = ringo_sync:collect_leaves(DiffLeaves, DBName),
