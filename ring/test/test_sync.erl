@@ -111,7 +111,7 @@ diff_test(Entries) ->
                 halt()
         end,
 
-        Matches = [X || X <- Diff2] -- ChangedLeaves,
+        Matches = Diff2 -- ChangedLeaves,
         if Matches == [] ->
                 io:fwrite(
                 "Changes in ~b entries were detected correctly in ~bms.~n",
