@@ -112,7 +112,7 @@ diff_test(Entries) ->
         end,
 
         Matches = Diff2 -- ChangedLeaves,
-        if Matches == [] ->
+        if Matches == [], length(Diff2) == length(ChangedLeaves) ->
                 io:fwrite(
                 "Changes in ~b entries were detected correctly in ~bms.~n",
                         [Entries, round(timer:now_diff(S2, S1) / 1000)]);
