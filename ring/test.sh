@@ -52,8 +52,8 @@ fi
 if [[ -z $1 || $1 == "sync" ]]; then
 echo "*** Basic sync-tree test ***"
 run test_sync basic_tree_test 100000
-#echo "*** ID-list test ***"
-#run test_sync idlist_test
+echo "*** ID-list test ***"
+run test_sync idlist_test
 echo "*** Diff test ***"
 run test_sync diff_test 1000
 fi

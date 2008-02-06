@@ -6,8 +6,7 @@
          collect_leaves/2, in_leaves/2, diff_parents/3,
          pick_children/3]).
 
--define(NUM_MERKLE_LEAVES, 8192).
-
+-include("ringo_store.hrl").
 %%%
 %%% 
 %%%
@@ -100,7 +99,8 @@ make_level(Z, [X, Y|R], L) ->
 %%%
 
 diff_parents(H, RLevel, OTree) ->
-        OLevel = lists:zip(lists:seq(1, 1 bsl (H - 1)), lists:nth(H, OTree)),
+        OLevel = lists:zip(lists:seq(0, 1 bsl (H - 1) - 1),
+                lists:nth(H, OTree)),
         %io:fwrite("Rlevel ~w OLevel ~w~n", [RLevel, OLevel]),
         diff(OLevel, RLevel, []).
 
@@ -120,8 +120,9 @@ diff([_|R1], [_|R2], Res) ->
 %%%
 
 pick_children(H, Parents, Tree) ->
-        Level = lists:zip(lists:seq(1, 1 bsl (H - 1)), lists:nth(H, Tree)),
-        pick(Level, Parents, 1, []).
+        Level = lists:zip(lists:seq(0, 1 bsl (H - 1) - 1),
+                lists:nth(H, Tree)),
+        pick(Level, Parents, 0, []).
 
 pick(_, [], _, Res) ->
         lists:reverse(Res);
@@ -140,12 +141,12 @@ collect_leaves(LeafList, DBName) ->
         LeafBag = ets:new(leaves, [bag]),
         ets:insert(LeafBag, [{N, x} || N <- LeafList]),
         ringo_reader:fold(fun(_, _, _, {Time, EntryID}, _, _) ->
-                {Leaf, _SyncID} = X = sync_id(EntryID, Time),
+                {Leaf, SyncID} = sync_id(EntryID, Time),
                 case ets:member(LeafBag, Leaf) of
-                        true -> ets:insert(LeafBag, X);
+                        true -> ets:insert(LeafBag, {Leaf, SyncID});
                         false -> ok
                 end
-        end, DBName, ok),
+        end, ok, DBName),
         List = group_results([X ||
                 {_, V} = X <- ets:tab2list(LeafBag), V =/= x]),
         zlib:close(Z),
