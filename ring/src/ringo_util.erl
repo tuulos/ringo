@@ -1,6 +1,6 @@
 -module(ringo_util).
 
--export([ringo_nodes/0, validate_ring/1, domain_id/0, domain_id/1]).
+-export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2]).
 
 ringo_nodes() ->
         Hosts = case net_adm:host_file() of
@@ -35,5 +35,5 @@ validate_ring(Ring) ->
 
 domain_id(Name) -> domain_id(Name, 0).
 domain_id(Name, Chunk) when is_integer(Chunk), is_list(Name) ->
-        <<ID:64, _/binary>> = crypto:sha([integer_to_list(Chunk), " ", Name]),
+        <<ID:64, _/binary>> = erlang:md5([integer_to_list(Chunk), " ", Name]),
         ID.

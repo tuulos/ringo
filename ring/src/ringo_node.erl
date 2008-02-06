@@ -102,10 +102,10 @@ handle_call(new_ring_route, _From, R) ->
         spawn_link(fun() -> record_ring_route(R) end),
         {reply, ok, R};
 
-handle_call(get_previous, _From, #rnode{prevnode = {Prev} = R) ->
+handle_call(get_previous, _From, #rnode{prevnode = Prev} = R) ->
         {reply, {ok, Prev}, R};
 
-handle_call(get_next, _From, #rnode{nextnode = {Next} = R) ->
+handle_call(get_next, _From, #rnode{nextnode = Next} = R) ->
         {reply, {ok, Next}, R};
 
 %%% Place a node in the ring.
@@ -222,16 +222,17 @@ handle_info({nodedown, Node}, R) ->
 domain_dispatch(DomainID, IsOwner, Msg) ->
         {Alive, S} = case ets:lookup(domain_table, DomainID) of
                 [] -> {false, none};
-                [{_, S}] -> {is_process_alive(S), S};
+                [{_, S0}] -> {is_process_alive(S0), S0}
         end,
         if Alive -> 
                 Server = S;
         true ->
+                % XXX. BUG. find home
+                Home = "",
                 {ok, Server} = ringo_domain:start(Home, DomainID, IsOwner),
                 ets:insert(domain_table, {DomainID, Server})
         end,
-        gen_server:cast(Server, Msg),
-        {noreply, R}.
+        gen_server:cast(Server, Msg).
 
 kill_domains() ->
         [gen_server:cast(S, {kill_domain, "ring changes"}) || 
