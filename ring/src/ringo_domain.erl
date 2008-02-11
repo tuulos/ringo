@@ -90,11 +90,12 @@ init([Home, DomainID, IsOwner]) ->
         Domain = #domain{this = self(),
                          owner = IsOwner,
                          home = Path, 
-                         dbname = none,
+                         dbname = filename:join(Home, "data"),
                          host = net_adm:localhost(),
                          id = DomainID, 
                          z = zlib:open(),
                          db = none,
+                         full = false,
                          sync_tree = none, 
                          sync_ids = none,
                          sync_inbox = Inbox,
@@ -119,7 +120,7 @@ init([Home, DomainID, IsOwner]) ->
 %%%
 
 handle_call({new_domain, Name, Chunk, NReplicas}, _From, 
-        #domain{home = Path, id = ID} = D) ->
+        #domain{home = Path} = D) ->
         
         InfoFile = filename:join(Path, "info"),
         ok = file:make_dir(Path),
@@ -130,27 +131,32 @@ handle_call({new_domain, Name, Chunk, NReplicas}, _From,
         {reply, ok, open_domain(D)};
 
 % DB not open
-handle_call({put, Key, Value} = Req, From, 
-        #domain{db = none, owner = true} = D) ->
+handle_call({put, _, _, _} = R, From, #domain{db = none,
+        owner = true, full = false} = D) ->
+
         case catch open_domain(D) of
                 NewD when is_record(NewD, domain) ->
-                        handle_call(Req, From, NewD);
-                invalid_domain -> {stop, normal, invalid_domain(Req), D};
-                closed -> {stop, normal, closed_chunk(Req), D}
+                        handle_call(R, From, NewD);
+                invalid_domain -> {stop, normal, invalid_domain(R), D}
         end;
 
-handle_call({put, Key, Value} = Req, From,
-        #domain{size = Size, owner = true} = D) ->
-        % check that value doesn't exceed DOMAIN_CHUNK_MAX / (MAX_TRIES + 1)
-        % worst case: will make MAX_TRIES duplicates of this entry
-        New = ringo_writer:encoded_size(Key, Value) * ?MAX_TRIES,
-        if Size + New > ?DOMAIN_CHUNK_MAX ->
-                {stop, normal, chunk_full(Req), D};
-        true ->
-                EntryID = random:uniform(4294967295),
-                {ok, NewSize} = put_item(Req, EntryID, D),
-                {reply, ok, D#domain{size = NewSize}}
+handle_call({put, Key, Value, Flags}, _From,
+        #domain{size = Size, owner = true, full = false} = D) ->
+
+        EntryID = random:uniform(4294967295),
+        Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
+        case replicate(D, Entry) of
+                chunk_full -> chunk_full(D),
+                        {reply, ok, D#domain{full = true}};
+                _ -> {reply, ok, D#domain{size = Size +
+                        ringo_writer:entry_size(Entry)}}
         end;
+
+handle_call({put, _, _, _}, _From, #domain{full = true} = D) ->
+        % redirect to the next chunk
+        {reply, ok, D};
+        
+
 
 %%%
 %%% Sync_tree matches a replica's Merkle tree to the owner's.
@@ -172,7 +178,7 @@ handle_call({sync_tree, H, Level}, _,
 handle_call({flush_syncbox, Box}, _From,
         #domain{sync_inbox = Inbox, sync_outbox = Outbox} = D) ->
 
-        Tid = case D of
+        Tid = case Box of
                 sync_inbox -> Inbox;
                 sync_outbox -> Outbox
         end,
@@ -191,6 +197,12 @@ handle_call({update_sync_data, Tree, _}, _, D) ->
 %%% Maintenance
 %%%
 
+handle_cast({write_entry, _Entry}, #domain{db = none} = D) ->
+        {noreply, D};
+
+handle_cast({write_entry, Entry}, #domain{db = DB, size = Size} = D) ->
+        do_write(DB, Entry, Size, oldentry),
+        {noreply, D#domain{size = Size + ringo_writer:entry_size(Entry)}};
 
 handle_cast({kill_domain, Reason}, D) ->
         error_logger:info_report({"Domain killed: ", Reason}),
@@ -210,9 +222,7 @@ handle_cast({find_owner, Node, N}, #domain{owner = false, id = DomainID} = D)
         % kill the domain server immediately if the domain doesn't exist
         case catch open_domain(D) of
                 NewD when is_record(NewD, domain) -> {noreply, NewD};
-                invalid_domain -> {stop, normal, D};
-                % what should be done if the domain is closed?
-                closed -> {noreply, D}
+                invalid_domain -> {stop, normal, D}
         end;
 
 %%%
@@ -226,7 +236,7 @@ handle_cast({repl_put, _, {_, ONode, _}, _}, D) when ONode == node() ->
         {noreply, D};
 
 % replica on the same physical node as the owner, skip over this node
-handle_cast({repl_put, Entry, {OHost, _, _}, N} = R, #domain{host = Host} = D)
+handle_cast({repl_put, _, {OHost, _, _}, _} = R, #domain{host = Host} = D)
         when OHost == Host ->
         
         {ok, Prev} = gen_server:call(ringo_node, get_previous),
@@ -251,8 +261,8 @@ handle_cast({repl_put, Entry, {_, ONode, OPid} = Owner, N},
                         {repl_put, Entry, Owner, N - 1});
         true -> ok
         end,
-        {ok, _, NewSize} = ringo_writer:add_entry(DB, Entry),
-        {ONode, OPid} ! {repl_reply, {ok, NewSize}},
+        ok = ringo_writer:write_entry(DB, Entry),
+        {ONode, OPid} ! {repl_reply, ok},
         {noreply, D};
 
 %%%
@@ -260,8 +270,8 @@ handle_cast({repl_put, Entry, {_, ONode, OPid} = Owner, N},
 %%%
 
 
-handle_cast({sync_put, SyncID, Entry}, 
-        {owner = true, sync_inbox = Inbox} = D) ->
+handle_cast({sync_put, SyncID, Entry}, #domain{owner = true,
+        sync_inbox = Inbox} = D) ->
 
         M = ets:info(Inbox, memory),
         if M > ?SYNC_BUF_MAX_WORDS ->
@@ -272,14 +282,14 @@ handle_cast({sync_put, SyncID, Entry},
         end,
         {noreply, D};
 
-handle_cast({sync_get, Owner, Requests},
-        {owner = false, sync_outbox = Outbox} = D) ->
+handle_cast({sync_get, Owner, Requests}, #domain{owner = false,
+        sync_outbox = Outbox, this = This, dbname = DBName} = D) ->
 
         ets:insert(Outbox, [{SyncID, Owner} || SyncID <- Requests]),
-        spawn_link(fun() -> flush_sync_outbox(D) end),
+        spawn_link(fun() -> flush_sync_outbox(This, DBName) end),
         {noreply, D};        
 
-handle_cast({sync_external, DstDir}, D) ->
+handle_cast({sync_external, _DstDir}, D) ->
         error_logger:info_report("launch rsync etc"),
         {noreply, D};
 
@@ -332,7 +342,7 @@ open_domain(#domain{home = Home} = D) ->
                 _ -> throw(invalid_domain)
         end.
 
-open_db(#domain{home = Home, id = DomainID} = D) ->
+open_db(#domain{home = Home, dbname = DBName} = D) ->
         % This will crash if there's a second instance of this domain
         % already running on this node. Note that it is crucial that
         % this function is called *after* we have ensured that the domain
@@ -340,35 +350,33 @@ open_db(#domain{home = Home, id = DomainID} = D) ->
         % out non-gc'ed atom tables with random domain names.
         %register(list_to_atom("ringo_domain-" ++ integer_to_list(DomainID)),
         %        self()),
-        case file:read_file_info(file:join(Home, "closed")) of
-                {ok, _} -> throw(closed);
-                {error, _} -> 
-                        DataFile = filename:join(Home, "data"),
-                        {ok, DB} = file:open(DataFile, [append, raw]),
-                        D#domain{db = DB, dbname = DataFile,
-                                size = domain_size(Home)}
-        end.
+        Full = case file:read_file_info(file:join(Home, "closed")) of
+                {ok, _} -> true;
+                _ -> false
+        end,
+        {ok, DB} = file:open(DBName, [append, raw]),
+        D#domain{db = DB, size = domain_size(Home), full = Full}.
 
 domain_size(Home) ->
         [Size, _] = string:tokens(os:cmd(["du -b ", Home, " |tail -1"]), "\t"),
         list_to_integer(Size).
 
-close_domain(DomainID, Home, DB) ->
-        ok = file:close(DB),
+close_domain(Home, DB) ->
+        ok = file:sync(DB),
         %DFile = file:join(Home, "data"),
         %ok = file:write_file_info(DFile, #file_info{mode = ?RDONLY}),
         CFile = file:join(Home, "closed"),
-        ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}),
         ok = file:write_file(CFile, <<>>), 
-        ets:insert(dbs, {DomainID, closed}).
+        ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).
 
-invalid_domain(Request) -> no_fun.
+invalid_domain(_Request) -> no_fun.
         % push backwards
 
-closed_chunk(Request) -> no_fun.
+closed_chunk(_Request) -> no_fun.
         % forward to the next chunk
 
-chunk_full(Request) -> no_fun.
+chunk_full(#domain{home = Home, db = DB}) ->
+        close_domain(Home, DB).
         % create a new domain chunk
 
 %
@@ -380,24 +388,43 @@ chunk_full(Request) -> no_fun.
 %%% Put with replication
 %%%
 
-put_item({put, Key, Value}, EntryID, #domain{db = DB, id = DomainID}) ->
-        {ok, Entry, NewSize} = ringo_writer:add_entry(DB, EntryID, Key, Value),
-        try_put_item(Entry, EntryID, DomainID, 0).
+replicate(#domain{db = DB, size = Size, id = DomainID}, Entry) ->
+        case do_write(DB, Entry, Size, new_entry) of
+                chunk_full -> chunk_full;
+                _ -> replicate(DomainID, Entry, 0)
+        end.
 
-try_put_item(_, EntryID, _, ?MAX_TRIES) ->
-        error_logger:warning_report({"Replication failed! EntryID", EntryID}),
+replicate(_, _Entry, ?MAX_TRIES) ->
+        error_logger:warning_report({"Replication failed!"}),
         failed;
 
-try_put_item(Entry, EntryID, DomainID, Tries) ->
+replicate(DomainID, Entry, Tries) ->
         Me = {net_adm:localhost(), node(), self()},
         {ok, Prev} = gen_server:call(ringo_node, get_previous),
         gen_server:cast({ringo_node, Prev},
                 {{domain, DomainID}, {repl_put, Entry, Me, ?NREPLICAS}}),
         receive
-                {repl_reply, {ok, Size}} -> ok
+                {repl_reply, ok} -> ok
         after ?REPL_TIMEOUT ->
-                try_put_item(Entry, EntryID, DomainID, Tries + 1)
+                replicate(DomainID, Entry, Tries + 1)
         end.
+
+do_write(_, Entry, CurrentSize, new_entry)
+        when size(Entry) + CurrentSize > ?DOMAIN_CHUNK_MAX ->
+                chunk_full;
+
+% should we prevent replica or sync entries to be added if the resulting
+% chunk would exceed the maximum size? If yes, spontaneously corrupted entries
+% can't be fixed. If no, a chunk may grow infinitely large. In this case, it is
+% possible that a nasty bug causes a large amounts of sync entries to be sent
+% which would eventually fill the disk.
+
+%do_write(_, Entry, CurrentSize, _)
+%        when size(Entry) + CurrentSize > ?DOMAIN_CHUNK_MAX * 1.2 ->
+%                chunk_full;
+
+do_write(DB, Entry, _CurrentSize, _) ->
+        ringo_writer:write_entry(DB, Entry).
 
 % Premises about resync:
 %
@@ -409,23 +436,24 @@ try_put_item(Entry, EntryID, DomainID, Tries) ->
 %   time
 
 
+
         
 %%%
 %%% Synchronization 
 %%%
 
 % Owner-end in synchronization -- just update the tree
-resync(#domain{this = This, home = Home, owner = true} = D) ->
+resync(#domain{this = This, dbname = DBName, owner = true}) ->
         register(resync, self()),
-        update_sync_tree(D),
-        flush_sync_outbox(D);
+        update_sync_tree(This, DBName),
+        flush_sync_outbox(This, DBName);
 
 % Replica-end in synchronization -- the active party
 resync(#domain{home = Home, this = This, host = Host,
-        id = DomainID, dbname = DBName} = D) ->
+        id = DomainID, dbname = DBName}) ->
 
         register(resync, self()),
-        [[Root]|Tree] = update_sync_tree(D),
+        [[Root]|Tree] = update_sync_tree(This, DBName),
         {ok, Owner, Distance} = find_owner(DomainID),
         DiffLeaves = merkle_sync(Owner, [{0, Root}], 1, Tree),
         if DiffLeaves == [] -> ok;
@@ -438,7 +466,7 @@ resync(#domain{home = Home, this = This, host = Host,
 % merkle_sync compares the replica's Merkle tree to the owner's
 
 % Trees are in sync
-merkle_sync(Owner, [], 2, Tree) -> [];
+merkle_sync(_Owner, [], 2, _Tree) -> [];
 
 merkle_sync(Owner, Level, H, Tree) ->
         {ok, Diff} = gen_server:call({sync_tree, H, Level}),
@@ -449,22 +477,19 @@ merkle_sync(Owner, Level, H, Tree) ->
                 Diff
         end.
 
-% BUG BUG: #domain record is not valid -- it doesn't contain a valid DB and
-% DBName, for instance! Find some other way.
-
 % update_sync_tree scans entries in this DB, collects all entry IDs and
 % computes the leaf hashes. Entries in the inbox that don't exist in the DB
 % already are written to disk. Finally Merkle tree is re-built.
-update_sync_tree(#domain{this = This, home = Home,
-                db = DB, z = Z, dbname = DBName}) ->
-
+update_sync_tree(This, DBName) ->
         Inbox = gen_server:call(This, {flush_syncbox, sync_inbox}),
         {LeafHashes, LeafIDs} = ringo_sync:make_leaf_hashes_and_ids(DBName),
         Entries = lists:filter(fun({SyncID, _}) ->
                 not ringo_sync:in_leaves(LeafIDs, SyncID)
         end, Inbox),
-        {LeafHashesX, LeafIDsX} =
-                flush_sync_inbox(DB, Z, Entries, LeafHashes, LeafIDs),
+        Z = zlib:open(),
+        {LeafHashesX, LeafIDsX} = flush_sync_inbox(This, Z, Entries,
+                LeafHashes, LeafIDs),
+        zlib:close(Z),
         Tree = ringo_sync:build_merkle_tree(LeafHashesX),
         ets:delete(LeafHashesX),
         gen_server:call(This, {update_sync_data, Tree, LeafIDsX}),
@@ -474,15 +499,15 @@ update_sync_tree(#domain{this = This, home = Home,
 % (or owner) to disk and updates the leaf hashes accordingly
 flush_sync_inbox(_, _, [], LeafHashes, LeafIDs) -> {LeafHashes, LeafIDs};
 
-flush_sync_inbox(DB, Z, [{SyncID, Entry}|Rest], LeafHashes, LeafIDs) ->
+flush_sync_inbox(This, Z, [{SyncID, Entry}|Rest], LeafHashes, LeafIDs) ->
         ringo_sync:update_leaf_hashes(Z, LeafHashes, SyncID),
         LeafIDsX = ringo_sync:update_leaf_ids(Z, LeafIDs, SyncID),
-        ringo_writer:add_entry(DB, Entry), 
-        flush_sync_inbox(DB, Z, Rest, LeafHashes, LeafIDsX).
+        gen_server:cast(This, {write_entry, Entry}),
+        flush_sync_inbox(This, Z, Rest, LeafHashes, LeafIDsX).
 
 % flush_sync_outbox sends entries that exists on this replica or owner to
 % another node that requested the entry
-flush_sync_outbox(#domain{this = This, dbname = DBName}) ->
+flush_sync_outbox(This, DBName) ->
         {ok, Outbox} = gen_server:call(This, {flush_syncbox, sync_outbox}),
         flush_sync_outbox_1(DBName, Outbox).
 
