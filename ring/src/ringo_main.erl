@@ -35,12 +35,12 @@ start(_Type, _Args) ->
         Home = conf(ringo_home),
         Id = parse_path(lists:reverse(string:tokens(Home, "/"))),
         check_nodename(Id),
-        supervisor:start_link(ringo_main, [erlang:list_to_integer(Id, 16)]).
+        supervisor:start_link(ringo_main, [Home, erlang:list_to_integer(Id, 16)]).
 
-init([Id]) -> 
+init([Home, Id]) -> 
         error_logger:info_report([{"RINGO NODE", Id, "BOOTS"}]),
         {ok, {{one_for_one, ?MAX_R, ?MAX_T},
-                 [{ringo_node, {ringo_node, start_link, [Id]},
+                 [{ringo_node, {ringo_node, start_link, [Home, Id]},
                         permanent, 10, worker, dynamic}]
         }}.
 

@@ -124,51 +124,6 @@ init([Home, DomainID, IsOwner]) ->
         end,
         {ok, Domain}.
         
-
-
-%%%
-%%% Basic domain operations: Create, put, get 
-%%%
-
-handle_call({new_domain, Name, Chunk, NReplicas}, _From, 
-        #domain{home = Path} = D) ->
-        
-        InfoFile = filename:join(Path, "info"),
-        ok = file:make_dir(Path),
-        ok = file:write_file(InfoFile,
-                [integer_to_list(NReplicas), 32, 
-                 integer_to_list(Chunk), 32, Name]),
-        ok = file:write_file_info(InfoFile, #file_info{mode = ?RDONLY}),
-        {reply, ok, open_domain(D)};
-
-% DB not open
-handle_call({put, _, _, _} = R, From, #domain{db = none,
-        owner = true, full = false} = D) ->
-
-        case catch open_domain(D) of
-                NewD when is_record(NewD, domain) ->
-                        handle_call(R, From, NewD);
-                invalid_domain -> {stop, normal, invalid_domain(R), D}
-        end;
-
-handle_call({put, Key, Value, Flags}, _From,
-        #domain{size = Size, owner = true, full = false} = D) ->
-
-        EntryID = random:uniform(4294967295),
-        Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
-        case replicate(D, Entry) of
-                chunk_full -> chunk_full(D),
-                        {reply, ok, D#domain{full = true}};
-                _ -> {reply, ok, D#domain{size = Size +
-                        ringo_writer:entry_size(Entry)}}
-        end;
-
-handle_call({put, _, _, _}, _From, #domain{full = true} = D) ->
-        % redirect to the next chunk
-        {reply, ok, D};
-        
-
-
 %%%
 %%% Sync_tree matches a replica's Merkle tree to the owner's.
 %%% Called by a replica in merkle_sync.
@@ -203,6 +158,40 @@ handle_call({update_sync_data, Tree, LeafIDs}, _, #domain{owner = true} = D) ->
 handle_call({update_sync_data, Tree, _}, _, D) ->
         {reply, ok, D#domain{sync_tree = Tree, sync_ids = none}}.
 
+%%%
+%%% Basic domain operations: Create, put, get 
+%%%
+
+handle_cast({new_domain, Name, Chunk, NReplicas, From},  D) ->
+        NewD = new_domain(D, [integer_to_list(NReplicas), 32, 
+                        integer_to_list(Chunk), 32, Name]),
+        From ! {ok, {node(), self()}},
+        {noreply, NewD};
+
+% DB not open
+handle_cast({put, _, _, _} = R, #domain{db = none,
+        owner = true, full = false} = D) ->
+
+        case catch open_domain(D) of
+                NewD when is_record(NewD, domain) -> handle_cast(R,NewD);
+                invalid_domain -> {stop, normal, invalid_domain(R), D}
+        end;
+
+handle_cast({put, Key, Value, Flags}, #domain{size = Size,
+        owner = true, full = false} = D) ->
+
+        EntryID = random:uniform(4294967295),
+        Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
+        case replicate(D, EntryID, Entry) of
+                chunk_full -> chunk_full(D),
+                        {reply, ok, D#domain{full = true}};
+                _ -> {reply, ok, D#domain{size = Size +
+                        ringo_writer:entry_size(Entry)}}
+        end;
+
+handle_cast({put, _, _, _}, #domain{full = true} = D) ->
+        % redirect to the next chunk
+        {reply, ok, D};
 
 %%%
 %%% Maintenance
@@ -254,16 +243,22 @@ handle_cast({repl_put, _, {OHost, _, _}, _} = R, #domain{host = Host} = D)
         gen_server:cast({ringo_node, Prev}, R),
         {noreply, D};
 
-% XXX: FIXME! domain not open
-handle_cast({repl_put, _, {_, ONode, OPid}, _} = R, #domain{db = none} = D) ->
+handle_cast({repl_put, _, _, {_, ONode, OPid}, _} = R, #domain{db = none} = D) ->
         case catch open_domain(D) of 
+                
                 NewD when is_record(NewD, domain) -> handle_cast(R, NewD);
-                _ -> {ONode, OPid} ! {repl_reply_CHANGME, resync},
-                     {noreply, D}
+
+                _ -> {ONode, OPid} ! {repl_reply,
+                        {new_domain, {node(), self()}}},
+                     receive 
+                        {repl_domain, Info} ->
+                                handle_cast(R, new_domain(D, Info))
+                     after 1000 -> {noreply, D}
+                     end
         end;
 
 % normal case
-handle_cast({repl_put, Entry, {_, ONode, OPid} = Owner, N},
+handle_cast({repl_put, EntryID, Entry, {_, ONode, OPid} = Owner, N},
         #domain{db = DB} = D) ->
 
         if N > 1 ->
@@ -273,7 +268,7 @@ handle_cast({repl_put, Entry, {_, ONode, OPid} = Owner, N},
         true -> ok
         end,
         ok = ringo_writer:write_entry(DB, Entry),
-        {ONode, OPid} ! {repl_reply, ok},
+        {ONode, OPid} ! {repl_reply, {EntryID, ok}},
         {noreply, D};
 
 %%%
@@ -334,6 +329,15 @@ handle_cast({sync_pack, From, Pack, Distance},
 %%% Random messages
 %%%
 
+
+handle_info({repl_domain, Info}, D) ->
+        {noreply, new_domain(D, Info)};
+
+handle_info({repl_reply, {new_domain, From}}, #domain{home = Home} = D) ->
+        {ok, Info} = file:read_file(filename:join(Home, "info")),
+        From ! {repl_domain, Info},
+        {noreply, D};
+
 % ignore late replication replies
 handle_info({repl_reply, _}, D) ->
         {noreply, D};
@@ -346,6 +350,13 @@ handle_info({'DOWN', _, _, _, _}, R) ->
 %%%
 %%% Domain maintenance
 %%%
+
+new_domain(#domain{home = Path} = D, Info) ->
+        InfoFile = filename:join(Path, "info"),
+        ok = file:make_dir(Path),
+        ok = file:write_file(InfoFile, Info),
+        ok = file:write_file_info(InfoFile, #file_info{mode = ?RDONLY}),
+        open_domain(D).
 
 open_domain(#domain{home = Home} = D) ->
         case file:read_file_info(Home) of
@@ -399,25 +410,34 @@ chunk_full(#domain{home = Home, db = DB}) ->
 %%% Put with replication
 %%%
 
-replicate(#domain{db = DB, size = Size, id = DomainID}, Entry) ->
+replicate(#domain{home = Home, db = DB, size = Size, id = DomainID},
+        EntryID, Entry) ->
+
         case do_write(DB, Entry, Size, new_entry) of
                 chunk_full -> chunk_full;
-                _ -> replicate(DomainID, Entry, 0)
+                _ -> replicate(Home, DomainID, EntryID, Entry, 0)
         end.
 
-replicate(_, _Entry, ?MAX_TRIES) ->
+replicate(_, _, _, _Entry, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
         failed;
 
-replicate(DomainID, Entry, Tries) ->
+replicate(Home, DomainID, EntryID, Entry, Tries) ->
         Me = {net_adm:localhost(), node(), self()},
         {ok, Prev} = gen_server:call(ringo_node, get_previous),
-        gen_server:cast({ringo_node, Prev},
-                {{domain, DomainID}, {repl_put, Entry, Me, ?NREPLICAS}}),
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                {repl_put, EntryID, Entry, Me, ?NREPLICAS}}),
+        receive_repl_replies(Home, DomainID, EntryID, Entry, Tries).
+
+receive_repl_replies(Home, DomainID, EntryID, Entry, Tries) ->
         receive
-                {repl_reply, ok} -> ok
+                {repl_reply, {new_domain, _}} = R ->
+                        handle_info(R, #domain{home = Home}),
+                        receive_repl_replies(Home, DomainID,
+                                EntryID, Entry, Tries);
+                {repl_reply, {EntryID, ok}} -> ok
         after ?REPL_TIMEOUT ->
-                replicate(DomainID, Entry, Tries + 1)
+                replicate(Home, DomainID, EntryID, Entry, Tries + 1)
         end.
 
 do_write(_, Entry, CurrentSize, new_entry)

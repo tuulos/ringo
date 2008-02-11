@@ -34,20 +34,20 @@
 -module(ringo_node).
 -behaviour(gen_server).
 
--export([start_link/1, check_ring_route/0, check_parallel_rings/0]).
+-export([start_link/2, check_ring_route/0, check_parallel_rings/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
         terminate/2, code_change/3]).
 
--record(rnode, {myid, previd, nextid, prevnode, nextnode, route}).
+-record(rnode, {myid, previd, nextid, prevnode, nextnode, route, home}).
 
 
--define(RING_ROUTE_INTERVAL, 10 * 1000000). % microseconds
--define(RING_ZOMBIE_LIMIT, 30 * 1000000). % microseconds
--define(PARALLEL_CHECK_INTERVAL, 30 * 1000). % milliseconds
+-define(RING_ROUTE_INTERVAL, 30 * 1000000). % microseconds
+-define(RING_ZOMBIE_LIMIT, 60 * 1000000). % microseconds
+-define(PARALLEL_CHECK_INTERVAL, 60 * 1000). % milliseconds
 
-start_link(Id) ->
+start_link(Home, Id) ->
         case gen_server:start_link({local, ringo_node},
-                ringo_node, [Id], [{debug, [trace, log]}]) of
+                ringo_node, [Home, Id], [{debug, [trace, log]}]) of
                 {ok, Server} -> {ok, Server};
                 {error, {already_started, Server}} -> {ok, Server}
         end,
@@ -57,7 +57,7 @@ start_link(Id) ->
         {ok, Server}.
 
 
-init([Id]) ->
+init([Home, Id]) ->
         {A1, A2, A3} = now(),
         random:seed(A1, A2, A3),
         RTime = round(?RING_ROUTE_INTERVAL / 1000 + random:uniform(10000)),
@@ -69,7 +69,7 @@ init([Id]) ->
 
         ets:new(domain_table, [named_table]),
         {ok, #rnode{myid = Id, previd = Id, nextid = Id, prevnode = node(),
-                    nextnode = node(), route = {now(), []}}}.
+                    nextnode = node(), route = {now(), []}, home = Home}}.
 
 
 %handle_call(connect_to_ring, _From, #rnode{myid = MyID} = R) ->
@@ -172,18 +172,18 @@ handle_cast({kill_node, Reason}, RNode) ->
         error_logger:warning_report({"Kill node requested", Reason}),
         {stop, node_killed, RNode};
 
-handle_cast({{domain, DomainID}, Msg}, R) ->
-        domain_dispatch(DomainID, false, Msg),
+handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
+        domain_dispatch(Home, DomainID, false, Msg),
         {noreply, R};
 
 % Length(Ring) > 0 check ensures that no operation is performed until the
 % node is a valid member of the ring.
 handle_cast({match, ReqID, Op, From, Args} = Req, 
-        #rnode{route = {_, Ring}} = R) when Ring =/= [] ->
+        #rnode{route = {_, Ring}, home = Home} = R) when Ring =/= [] ->
         
         Match = match(ReqID, R),
         if Match, Op == domain ->
-                domain_dispatch(ReqID, true, Args);
+                domain_dispatch(Home, ReqID, true, Args);
         Match ->
                 spawn_link(fun() -> op(Op, Args, From, ReqID, R) end);
         true ->
@@ -219,7 +219,7 @@ handle_info({nodedown, Node}, R) ->
 %%%
 %%%
 
-domain_dispatch(DomainID, IsOwner, Msg) ->
+domain_dispatch(Home, DomainID, IsOwner, Msg) ->
         {Alive, S} = case ets:lookup(domain_table, DomainID) of
                 [] -> {false, none};
                 [{_, S0}] -> {is_process_alive(S0), S0}
@@ -227,8 +227,6 @@ domain_dispatch(DomainID, IsOwner, Msg) ->
         if Alive -> 
                 Server = S;
         true ->
-                % XXX. BUG. find home
-                Home = "",
                 {ok, Server} = ringo_domain:start(Home, DomainID, IsOwner),
                 ets:insert(domain_table, {DomainID, Server})
         end,
