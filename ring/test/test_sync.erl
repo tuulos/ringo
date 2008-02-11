@@ -11,7 +11,9 @@ basic_tree_test(Entries) ->
         Domain = #domain{home = "test_data", db = DB, z = zlib:open()},
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                ringo_writer:add_entry(Domain, EntryID, <<>>, <<>>, [])
+                Entry = ringo_writer:make_entry(Domain, 
+                        EntryID, <<>>, <<>>, []),
+                ok = ringo_writer:write_entry(DB, Entry)
         end, lists:seq(1, Entries)),
 
         S = now(),

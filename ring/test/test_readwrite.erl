@@ -13,8 +13,9 @@ write_test(Entries) ->
         lists:foreach(fun(I) ->
                 EntryID = random:uniform(4294967295),
                 N = I + 100,
-                ringo_writer:add_entry(Domain, EntryID, <<"KeyYek:", I:32>>,
-                        <<"ValueEulav:", N:32>>, [])
+                Entry = ringo_writer:make_entry(Domain, EntryID, <<"KeyYek:", I:32>>,
+                                <<"ValueEulav:", N:32>>, []),
+                ok = ringo_writer:write_entry(DB, Entry)
         end, lists:seq(1, Entries)),
         io:fwrite("Writing ~b items took ~bms~n",
                 [Entries, round(timer:now_diff(now(), S) / 1000)]),
@@ -65,13 +66,14 @@ extfile_write_test(Entries) ->
         S = now(),
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                ringo_writer:add_entry(Domain, EntryID, 
-                        <<"Bash:", BashCRC:32>>, Bash, []),
+                ringo_writer:write_entry(DB, ringo_writer:make_entry(Domain, EntryID, 
+                                <<"Bash:", BashCRC:32>>, Bash, [])),
                 % entry with an equal EntryID, should be skipped
-                ringo_writer:add_entry(Domain, EntryID, <<"skipme">>, <<>>, []),
+                ringo_writer:write_entry(DB, ringo_writer:make_entry(
+                        Domain, EntryID, <<"skipme">>, <<>>, [])),
                 NextID = random:uniform(4294967295),
-                ringo_writer:add_entry(Domain, NextID, <<"small">>,
-                        <<"fall">>, [])
+                ringo_writer:write_entry(DB, ringo_writer:make_entry(Domain, NextID,
+                        <<"small">>, <<"fall">>, []))
         end, lists:seq(1, Entries)),
         io:fwrite("Writing ~b big items took ~bms~n",
                 [Entries, round(timer:now_diff(now(), S) / 1000)]),

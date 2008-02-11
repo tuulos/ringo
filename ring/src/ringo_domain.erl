@@ -1,4 +1,15 @@
 
+% TODO:
+% 1. Put with replicas works
+% 2. Simple syncing works (small items)
+% 3. Syncing works (large items)
+% 4. New replica node from the scratch 
+% 5. New node, owner redirect (invalid domain)
+% 6. Simple chunking: close, open a new chunk, redirect request
+% 7. Put with a closed chunk
+% 8. Syncing a closed chunk
+
+
 % motto:
 % in the worst case data will be lost. Aim at a good average case and try to
 % ensure that it is possible to salvage data by hand after a catastrophic
