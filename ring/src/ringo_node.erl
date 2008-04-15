@@ -41,13 +41,14 @@
 -record(rnode, {myid, previd, nextid, prevnode, nextnode, route, home}).
 
 
--define(RING_ROUTE_INTERVAL, 30 * 1000000). % microseconds
--define(RING_ZOMBIE_LIMIT, 60 * 1000000). % microseconds
--define(PARALLEL_CHECK_INTERVAL, 60 * 1000). % milliseconds
+-define(RING_ROUTE_INTERVAL, 60 * 1000000). % microseconds
+-define(RING_ZOMBIE_LIMIT, 120 * 1000000). % microseconds
+-define(PARALLEL_CHECK_INTERVAL, 120 * 1000). % milliseconds
 
 start_link(Home, Id) ->
         case gen_server:start_link({local, ringo_node},
-                ringo_node, [Home, Id], [{debug, [trace, log]}]) of
+                %ringo_node, [Home, Id], [{debug, [trace, log]}]) of
+                ringo_node, [Home, Id], []) of
                 {ok, Server} -> {ok, Server};
                 {error, {already_started, Server}} -> {ok, Server}
         end,
@@ -170,7 +171,7 @@ handle_call({op, Op, Args, From, ReqID}, _, RNode) ->
 
 handle_cast({kill_node, Reason}, RNode) ->
         error_logger:warning_report({"Kill node requested", Reason}),
-        {stop, node_killed, RNode};
+        {stop, normal, RNode};
 
 handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
         domain_dispatch(Home, DomainID, false, Msg),
@@ -182,11 +183,15 @@ handle_cast({match, ReqID, Op, From, Args} = Req,
         #rnode{route = {_, Ring}, home = Home} = R) when Ring =/= [] ->
         
         Match = match(ReqID, R),
+        error_logger:info_report({"Match", [Match, Op]}),
         if Match, Op == domain ->
+                error_logger:info_report({"Match: domain operation"}),
                 domain_dispatch(Home, ReqID, true, Args);
         Match ->
+                error_logger:info_report({"Match: node operation"}),
                 spawn_link(fun() -> op(Op, Args, From, ReqID, R) end);
         true ->
+                error_logger:info_report({"Forwarding to next node"}),
                 gen_server:cast({ringo_node, R#rnode.nextnode}, Req)
         end,
         {noreply, R};
@@ -220,6 +225,7 @@ handle_info({nodedown, Node}, R) ->
 %%%
 
 domain_dispatch(Home, DomainID, IsOwner, Msg) ->
+        error_logger:info_report({"Dispatch", DomainID, IsOwner, Msg}),
         {Alive, S} = case ets:lookup(domain_table, DomainID) of
                 [] -> {false, none};
                 [{_, S0}] -> {is_process_alive(S0), S0}
@@ -330,7 +336,7 @@ op(circulate, {Ring, NodeOp, EndOp}, From, 1,
                         throw(Error)
         end,
         
-        error_logger:info_report({"Calling next", Next}),
+        %error_logger:info_report({"Calling next", Next}),
 
         case catch gen_server:call({ringo_node, Next},
                 {op, circulate, {[{MyID, node()}|Ring], NodeOp, EndOp},
@@ -513,7 +519,7 @@ check_ring_route() ->
 check_parallel_rings() ->
         {ok, {_, R}} = gen_server:call(ringo_node, get_ring_route),
         {_, Ring} = lists:unzip(R),
-        error_logger:warning_report({"Ring", Ring, "Other", ringo_util:ringo_nodes()}),
+        %error_logger:warning_report({"Ring", Ring, "Other", ringo_util:ringo_nodes()}),
 
         Nodes = ringo_util:ringo_nodes(),
         Aliens = Nodes -- Ring,

@@ -1,5 +1,5 @@
 -module(ringo_cmd).
--export([create/1]).
+-export([create/1, put/1]).
 
 request(Name, Chunk, Msg) ->
         DomainID = ringo_util:domain_id(Name, Chunk),
@@ -9,22 +9,24 @@ request(Name, Chunk, Msg) ->
         ok = gen_server:cast({ringo_node, First},
                 {match, DomainID, domain, x, Msg}),
         receive
-                {ok, Node} ->
-                        io:fwrite("Got ok from ~w~n", [Node]);
+                {ok, M} ->
+                        io:fwrite("Got ok: ~w~n", [M]);
                 Other ->
                         io:fwrite("Error: ~w~n", [Other])
         after 5000 ->
                 io:fwrite("Timeout~n", [])
         end.
 
-create([Name, Chunk, NReplicas]) ->
-        ChunkN = list_to_integer(Chunk),
+create([Name, NReplicas]) ->
         ReplN = list_to_integer(NReplicas),
-        request(Name, ChunkN, {new_domain, Name, ChunkN,
-                ReplN, {node(), self()}}),
+        request(Name, 0, {new_domain, Name, 0, ReplN, self()}),
         halt().
 
-                
+put([Name, Key, Value]) ->
+        request(Name, 0, {put, list_to_binary(Key), 
+                               list_to_binary(Value), [], self()}),
+        halt().
+
         
 
 
