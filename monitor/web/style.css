@@ -1,0 +1,103 @@
+
+body {
+        background: #ffffff;
+        color: #000000;
+        font-family: Verdana, "Bitstream Vera Sans", sans-serif;
+	line-height: 1.8em;
+        margin-left: 20px;
+}
+
+#hd h1{
+        margin-top: 50px;
+        font-size: 250%;
+        height: 50px;
+}
+
+.rcolumn{
+        border: 1px solid #666;
+        height: 500px;
+}
+
+.rcolumn .title{
+        background: #333;
+        color: white;
+        padding-left: 5px;
+        margin-bottom: 10px;
+        text-align: left;
+}
+
+.listbox{
+        overflow: auto;
+        height: 90%;
+}
+
+.rcolumn input{
+        border: 1px solid #aaa;
+        width: 97%;
+        margin-bottom: 10px;
+}
+
+#nodelist{
+}
+
+#chunkstat table{
+        margin-left: 20px;
+}
+
+#chunkstat table thead{
+        color: #8f138b;
+        font-weight: bold;
+}
+
+#chunkstat table td{
+        padding-right: 20px;
+}
+
+#chunkbox{
+        text-align: center;
+}
+
+#chunklist{
+        text-align: left;
+}
+
+.listitem{
+        cursor: pointer;
+        padding-left: 10px;
+        padding-right: 10px;
+}
+
+#ownritem{
+        color: #8f138b;
+        background: #eee;
+        font-weight: bold;
+}
+
+#replitem{
+        padding-left: 20px;
+}
+
+.listitem:hover{
+        background: #FFDE00; 
+}
+
+.active{
+        background: #FFDE00; 
+}
+
+.warn{
+        background: #FFC9BF;
+}
+
+.nodenfo{
+        font-size: 90%;
+        color: #8f138b;
+	line-height: 1.0em;
+        margin-bottom: 5px;
+        margin-left: 20px;
+}
+
+.hexid{
+        font-size: 90%;
+}
+
