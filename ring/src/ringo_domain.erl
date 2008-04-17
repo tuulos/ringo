@@ -158,6 +158,7 @@ handle_call({update_sync_data, Tree, LeafIDs}, _, #domain{owner = true} = D) ->
         {reply, ok, D#domain{sync_tree = Tree, sync_ids = LeafIDs}};
 
 handle_call({update_sync_data, Tree, _}, _, D) ->
+        error_logger:info_report({"Update sync data"}),
         {reply, ok, D#domain{sync_tree = Tree, sync_ids = none}}.
 
 %%%
@@ -177,12 +178,13 @@ handle_cast({new_domain, Name, Chunk, NReplicas, From},  D) ->
         end;
 
 % DB not open
-handle_cast({put, _, _, _, _} = R, #domain{db = none,
+handle_cast({put, _, _, _, From} = R, #domain{db = none,
         owner = true, full = false} = D) ->
 
         case catch open_domain(D) of
                 NewD when is_record(NewD, domain) -> handle_cast(R, NewD);
                 invalid_domain ->
+                        From ! {error, invalid_domain},
                         invalid_domain(R),
                         {stop, normal, D}
         end;
@@ -249,11 +251,11 @@ handle_cast({repl_put, _, _, {_, ONode, _}, _}, D) when ONode == node() ->
         {noreply, D};
 
 % replica on the same physical node as the owner, skip over this node
-handle_cast({repl_put, _, _, {OHost, _, _}, _} = R, #domain{host = Host} = D)
-        when OHost == Host ->
+handle_cast({repl_put, _, _, {OHost, _, _}, _} = R,
+        #domain{host = Host, id = DomainID} = D) when OHost == Host ->
         
         {ok, Prev} = gen_server:call(ringo_node, get_previous),
-        gen_server:cast({ringo_node, Prev}, R),
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, R}),
         {noreply, D};
 
 handle_cast({repl_put, _, _, {_, _, OPid}, _} = R, #domain{db = none} = D) ->
@@ -265,6 +267,8 @@ handle_cast({repl_put, _, _, {_, _, OPid}, _} = R, #domain{db = none} = D) ->
                      receive 
                         {repl_domain, Info} ->
                                 {ok, NewD} = new_domain(D, Info),
+                                error_logger:warning_report(
+                                        {"Handle cast", R, "NrewD", NewD}),
                                 handle_cast(R, NewD)
                      after 1000 -> {noreply, D}
                      end
@@ -272,12 +276,12 @@ handle_cast({repl_put, _, _, {_, _, OPid}, _} = R, #domain{db = none} = D) ->
 
 % normal case
 handle_cast({repl_put, EntryID, Entry, {_, _, OPid} = Owner, N},
-        #domain{db = DB} = D) ->
+        #domain{db = DB, id = DomainID} = D) ->
 
         if N > 1 ->
                 {ok, Prev} = gen_server:call(ringo_node, get_previous),
-                gen_server:cast({ringo_node, Prev},
-                        {repl_put, EntryID, Entry, Owner, N - 1});
+                gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                        {repl_put, EntryID, Entry, Owner, N - 1}});
         true -> ok
         end,
         ok = ringo_writer:write_entry(DB, Entry),
@@ -336,8 +340,12 @@ handle_cast({sync_pack, From, Pack, Distance},
         true ->
                 gen_server:cast(From, {sync_get, {node(), self()}, Requests})
         end,
-        {noreply, D}.
+        {noreply, D};
 
+handle_cast(Msg, R) ->
+        error_logger:info_report({"Unknown cast", Msg}),
+        {stop, normal, R}.
+        
 %%%
 %%% Random messages
 %%%
@@ -358,7 +366,7 @@ handle_info({repl_reply, _}, D) ->
 
 handle_info({'DOWN', _, _, _, _}, R) ->
         error_logger:info_report("Ringo_node down, domain dies too"),
-        {stop, node_down, R}.
+        {stop, normal, R}.
 
 
 %%%
@@ -443,8 +451,13 @@ replicate(_, _, _, _Entry, ?MAX_TRIES) ->
         failed;
 
 replicate(Home, DomainID, EntryID, Entry, Tries) ->
-        Me = {net_adm:localhost(), node(), self()},
+        % XXX: This is the correct line:
+        %Me = {net_adm:localhost(), node(), self()},
+        % XXX: This is for debugging:
+        Me = {os:getenv("DBGHOST"), node(), self()},
+
         {ok, Prev} = gen_server:call(ringo_node, get_previous),
+        error_logger:info_report({"Repl Prev", Prev}),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                 {repl_put, EntryID, Entry, Me, ?NREPLICAS}}),
         receive_repl_replies(Home, DomainID, EntryID, Entry, Tries).
@@ -502,9 +515,11 @@ resync(#domain{this = This, dbname = DBName, owner = true}) ->
 % Replica-end in synchronization -- the active party
 resync(#domain{home = Home, this = This, host = Host,
         id = DomainID, dbname = DBName}) ->
+        
+        error_logger:info_report({"Replica resync", DomainID}),
 
         register(resync, self()),
-        [[Root]|Tree] = update_sync_tree(This, DBName),
+        [[Root]|_] = Tree = update_sync_tree(This, DBName),
         {ok, Owner, Distance} = find_owner(DomainID),
         DiffLeaves = merkle_sync(Owner, [{0, Root}], 1, Tree),
         if DiffLeaves == [] -> ok;
@@ -519,9 +534,10 @@ resync(#domain{home = Home, this = This, host = Host,
 % Trees are in sync
 merkle_sync(_Owner, [], 2, _Tree) -> [];
 
-merkle_sync(Owner, Level, H, Tree) ->
-        {ok, Diff} = gen_server:call({sync_tree, H, Level}),
+merkle_sync({_ONode, OPid} = Owner, Level, H, Tree) ->
+        {ok, Diff} = gen_server:call(OPid, {sync_tree, H, Level}),
         if H < length(Tree) ->
+                error_logger:info_report({"Diff", Diff, "H", H}),
                 merkle_sync(Owner, ringo_sync:pick_children(H + 1, Diff, Tree),
                         H + 1, Tree);
         true ->
@@ -532,6 +548,7 @@ merkle_sync(Owner, Level, H, Tree) ->
 % computes the leaf hashes. Entries in the inbox that don't exist in the DB
 % already are written to disk. Finally Merkle tree is re-built.
 update_sync_tree(This, DBName) ->
+        error_logger:info_report({"Update sync tree starts"}),
         {ok, Inbox} = gen_server:call(This, {flush_syncbox, sync_inbox}),
         %error_logger:info_report({"INBOX", Inbox}),
         {LeafHashes, LeafIDs} = ringo_sync:make_leaf_hashes_and_ids(DBName),

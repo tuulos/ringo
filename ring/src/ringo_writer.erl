@@ -6,8 +6,8 @@
 -include("ringo_store.hrl").
 -include_lib("kernel/include/file.hrl").
 
-entry_size({Entry, {}}) -> size(Entry);
-entry_size({Entry, {_, Value}}) -> size(Entry) + size(Value).
+entry_size({Entry, {}}) -> iolist_size(Entry);
+entry_size({Entry, {_, Value}}) -> iolist_size(Entry) + iolist_size(Value).
 
 write_entry(DB, {Entry, {}}) ->
         ok = file:write(DB, Entry), ok;
