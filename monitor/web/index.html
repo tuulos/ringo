@@ -5,6 +5,12 @@
    <title>ringo status</title>
    <link rel="stylesheet" href="reset-fonts-grids.css" type="text/css">
    <link rel="stylesheet" href="style.css" type="text/css">
+   
+   <script type="text/javascript" src="jquery-1.2.1.js"></script>
+   <script type="text/javascript" src="jquery-dom.js"></script>
+   <script type="text/javascript" src="typewatch1.1.js"></script> 
+
+   <script type="text/javascript" src="ringomon.js"></script>
 </head>
 <body>
 <div id="doc3" class="yui-t7">
@@ -13,51 +19,9 @@
 	<div class="yui-g">
     <div class="yui-g first">
         <div class="yui-u first">
-                <div class="rcolumn" id="nodelist">
+                <div class="rcolumn">
                 <div class="title">Ring</div>
-                <div class="listbox">
-                
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                <div class="listitem">nx01:1 [<span class="hexid">5034fb761a4f2270</span>]
-                <div class="nodenfo">114 / 103MB / 90%</div>
-                </div>
-                
-                </div>
+                <div class="listbox" id="ringlist"></div>
                 </div>
         </div>
         <div class="yui-u">
@@ -73,7 +37,7 @@
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
-                <div class="warn" id="replitem">replica on nx01:2</div>
+                <div class="listitem warn" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>

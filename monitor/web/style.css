@@ -73,7 +73,7 @@ body {
         font-weight: bold;
 }
 
-#replitem{
+.replitem{
         padding-left: 20px;
 }
 
@@ -90,14 +90,21 @@ body {
 }
 
 .nodenfo{
-        font-size: 90%;
         color: #8f138b;
 	line-height: 1.0em;
         margin-bottom: 5px;
         margin-left: 20px;
+        font-size: 90%;
+}
+
+#ringlist{
 }
 
 .hexid{
         font-size: 90%;
+}
+.host{
+        color: #8f138b;
+        font-weight: bold;
 }
 
