@@ -231,7 +231,7 @@ handle_cast({find_owner, Node, N}, #domain{id = DomainID, owner = true} = D) ->
 handle_cast({find_owner, Node, N}, #domain{owner = false, id = DomainID} = D)
         when N < ?MAX_RING_SIZE ->
 
-        {ok, Next} = gen_server:call(ringo_node, get_next),
+        {ok, _, Next} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Next},
                 {{domain, DomainID}, {find_owner, Node, N + 1}}),
         % kill the domain server immediately if the domain doesn't exist
@@ -254,7 +254,7 @@ handle_cast({repl_put, _, _, {_, ONode, _}, _}, D) when ONode == node() ->
 handle_cast({repl_put, _, _, {OHost, _, _}, _} = R,
         #domain{host = Host, id = DomainID} = D) when OHost == Host ->
         
-        {ok, Prev} = gen_server:call(ringo_node, get_previous),
+        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, R}),
         {noreply, D};
 
@@ -279,7 +279,7 @@ handle_cast({repl_put, EntryID, Entry, {_, _, OPid} = Owner, N},
         #domain{db = DB, id = DomainID} = D) ->
 
         if N > 1 ->
-                {ok, Prev} = gen_server:call(ringo_node, get_previous),
+                {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
                 gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                         {repl_put, EntryID, Entry, Owner, N - 1}});
         true -> ok
@@ -456,7 +456,7 @@ replicate(Home, DomainID, EntryID, Entry, Tries) ->
         % XXX: This is for debugging:
         Me = {os:getenv("DBGHOST"), node(), self()},
 
-        {ok, Prev} = gen_server:call(ringo_node, get_previous),
+        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
         error_logger:info_report({"Repl Prev", Prev}),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                 {repl_put, EntryID, Entry, Me, ?NREPLICAS}}),
@@ -623,7 +623,7 @@ global_resync(DomainID) ->
         find_owner(DomainID).
 
 find_owner(DomainID) ->
-        {ok, Next} = gen_server:call(ringo_node, get_next),
+        {ok, _, Next} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Next},
                 {{domain, DomainID}, {find_owner, self(), 1}}),
         receive

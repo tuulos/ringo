@@ -103,11 +103,10 @@ handle_call(new_ring_route, _From, R) ->
         spawn_link(fun() -> record_ring_route(R) end),
         {reply, ok, R};
 
-handle_call(get_previous, _From, #rnode{prevnode = Prev} = R) ->
-        {reply, {ok, Prev}, R};
+handle_call(get_neighbors, _From,
+        #rnode{prevnode = Prev, nextnode = Next} = R) ->
 
-handle_call(get_next, _From, #rnode{nextnode = Next} = R) ->
-        {reply, {ok, Next}, R};
+        {reply, {ok, Prev, Next}, R};
 
 %%% Place a node in the ring.
 %%% Consider the following setting: X -> N -> Y
