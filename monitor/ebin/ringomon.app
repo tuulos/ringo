@@ -3,6 +3,7 @@
         {vsn, "1"},
         {modules, [ringomon,
                    scgi,
+                   json,
                    scgi_server,
                    handle_ring,
                    trunc_io,
