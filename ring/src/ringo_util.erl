@@ -1,6 +1,7 @@
 -module(ringo_util).
 
--export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2]).
+-export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2,
+        group_pairs/1, node_status/1]).
 
 ringo_nodes() ->
         Hosts = case net_adm:host_file() of
@@ -37,3 +38,24 @@ domain_id(Name) -> domain_id(Name, 0).
 domain_id(Name, Chunk) when is_integer(Chunk), is_list(Name) ->
         <<ID:64, _/binary>> = erlang:md5([integer_to_list(Chunk), " ", Name]),
         ID.
+
+% This function converts lists of form: [{2, A}, {3, B}, {2, C}]
+% to form: [{2, [A, C]}, {3, [B]}].
+group_pairs(L) -> 
+        lists:foldl(fun
+                ({PartID, R}, []) ->
+                        [{PartID, [R]}];
+                ({PartID, R}, [{PrevID, Lst}|Rest]) when PrevID == PartID ->
+                        [{PartID, [R|Lst]}|Rest];
+                ({PartID, R}, [{PrevID, _}|_] = Q) when PrevID =/= PartID ->
+                        [{PartID, [R]}|Q]
+        end, [], lists:keysort(1, L)).
+
+node_status(Parent) -> 
+        [_, UseB, _, Used|_] = lists:reverse(
+                string:tokens(os:cmd("df -h . | tail -1"), " ")),
+        [_, UseI|_] = lists:reverse(
+                string:tokens(os:cmd("df -i . | tail -1"), " ")),
+        {value, {total, Mem}} = lists:keysearch(total, 1, erlang:memory()),
+        Parent ! {node_results, {node(), {disk, {list_to_binary(UseB),
+                list_to_binary(UseI), list_to_binary(Used), Mem}}}}.
