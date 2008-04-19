@@ -165,10 +165,15 @@ handle_call({update_sync_data, Tree, _}, _, D) ->
 %%% Basic domain operations: Create, put, get 
 %%%
 
-handle_cast({new_domain, Name, Chunk, NReplicas, From},  D) ->
-        error_logger:info_report({"FROM", From}),
-        case new_domain(D, [integer_to_list(NReplicas), 32, 
-                        integer_to_list(Chunk), 32, Name]) of
+handle_cast({new_domain, Name, Chunk, NReplicas, From},
+        #domain{id = DomainID} = D) ->
+
+        InfoPack = [{nrepl, NReplicas},
+                    {chunk, Chunk},
+                    {name, list_to_binary(Name)},
+                    {id, DomainID}],
+
+        case new_domain(D, InfoPack) of
                 {error, eexist} ->
                         From ! {error, eexist},
                         {noreply, D};
@@ -356,7 +361,7 @@ handle_info({repl_domain, Info}, D) ->
         {noreply, NewD};
 
 handle_info({repl_reply, {new_domain, From}}, #domain{home = Home} = D) ->
-        {ok, Info} = file:read_file(filename:join(Home, "info")),
+        {ok, Info} = file:script(filename:join(Home, "info")),
         From ! {repl_domain, Info},
         {noreply, D};
 
@@ -377,7 +382,8 @@ new_domain(#domain{home = Path} = D, Info) ->
         InfoFile = filename:join(Path, "info"),
         case file:make_dir(Path) of
                 ok ->
-                        ok = file:write_file(InfoFile, Info),
+                        ok = file:write_file(InfoFile,
+                                [io_lib:print(Info), "."]),
                         ok = file:write_file_info(InfoFile,
                                 #file_info{mode = ?RDONLY}),
                         {ok, open_domain(D)};
