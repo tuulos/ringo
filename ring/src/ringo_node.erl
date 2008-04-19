@@ -105,8 +105,24 @@ handle_call(new_ring_route, _From, R) ->
 
 handle_call(get_neighbors, _From,
         #rnode{prevnode = Prev, nextnode = Next} = R) ->
-
         {reply, {ok, Prev, Next}, R};
+
+% NB get_domainlist and get_infopack 
+%
+% In case of heavy IO load or if Home contains a large number of
+% files, file:list_dir() or file:script() may block for a significant 
+% amount of time. To make sure that ringo_node server stays responsive,
+% the request is handled by a separate process.
+handle_call(get_domainlist, From, #rnode{home = Home} = R) ->
+        spawn(fun() -> get_domainlist(Home, From) end),
+        {noreply, R};
+
+handle_call({get_infopack, DomainID}, From, #rnode{home = Home} = R) ->
+        InfoFile = filename:join([Home, lists:flatten(["rdomain-",
+                integer_to_list(DomainID)]), "info"]),
+        spawn(fun() -> get_infopack(InfoFile, From) end),
+        {noreply, R};
+
 
 %%% Place a node in the ring.
 %%% Consider the following setting: X -> N -> Y
@@ -225,10 +241,7 @@ handle_info({nodedown, Node}, R) ->
 
 domain_dispatch(Home, DomainID, IsOwner, Msg) ->
         error_logger:info_report({"Dispatch", DomainID, IsOwner, Msg}),
-        {Alive, S} = case ets:lookup(domain_table, DomainID) of
-                [] -> {false, none};
-                [{_, S0}] -> {is_process_alive(S0), S0}
-        end,
+        {Alive, S} = domain_lookup(DomainID),
         if Alive -> 
                 Server = S;
         true ->
@@ -236,6 +249,12 @@ domain_dispatch(Home, DomainID, IsOwner, Msg) ->
                 ets:insert(domain_table, {DomainID, Server})
         end,
         gen_server:cast(Server, Msg).
+
+domain_lookup(DomainID) ->
+        case ets:lookup(domain_table, DomainID) of
+                [] -> {false, none};
+                [{_, Pid}] -> {is_process_alive(Pid), Pid}
+        end.
 
 kill_domains() ->
         [gen_server:cast(S, {kill_domain, "ring changes"}) || 
@@ -559,6 +578,24 @@ kill_parallel_ring(RingA, RingB) ->
         true -> ok
         end.
 
+
+get_domainlist(Home, From) -> 
+        {ok, Files} = file:list_dir(Home),
+        PDomains = lists:map(fun
+                ([$r, $d, $o, $m, $a, $i, $n, $-|DomainS]) ->
+                        DomainID = (catch list_to_integer(DomainS)),
+                        {Alive, _} = domain_lookup(DomainID),
+                        {DomainID, Alive};
+                (_) -> none
+        end, Files),
+        gen_server:reply(From, {ok, [X || X <- PDomains, X =/= none]}).
+
+get_infopack(InfoFile, From) ->
+        Ret = case catch file:script(InfoFile) of
+                {ok, _} = R -> R;
+                Error -> {error, Error}
+        end,
+        gen_server:reply(From, Ret).
 
 %%% callback stubs
 
