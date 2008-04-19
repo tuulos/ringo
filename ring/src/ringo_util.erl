@@ -1,7 +1,7 @@
 -module(ringo_util).
 
 -export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2,
-        group_pairs/1, node_status/1]).
+        group_pairs/1, send_system_status/1]).
 
 ringo_nodes() ->
         Hosts = case net_adm:host_file() of
@@ -51,7 +51,7 @@ group_pairs(L) ->
                         [{PartID, [R]}|Q]
         end, [], lists:keysort(1, L)).
 
-node_status(Parent) -> 
+send_system_status(Parent) -> 
         [_, UseB, _, Used|_] = lists:reverse(
                 string:tokens(os:cmd("df -h . | tail -1"), " ")),
         [_, UseI|_] = lists:reverse(
@@ -59,3 +59,7 @@ node_status(Parent) ->
         {value, {total, Mem}} = lists:keysearch(total, 1, erlang:memory()),
         Parent ! {node_results, {node(), {disk, {list_to_binary(UseB),
                 list_to_binary(UseI), list_to_binary(Used), Mem}}}}.
+
+
+
+
