@@ -8,7 +8,10 @@
 op("nodes", _Query) ->
         V = (catch is_process_alive(whereis(check_node_status))),
         if V -> ok;
-        true -> spawn(fun check_node_status/0)
+        true -> spawn(fun() ->
+                register(check_node_status, self()),
+                check_node_status()
+                end)
         end,
         case catch ets:tab2list(node_status_table) of 
                 {'EXIT', _} -> {ok, []};
@@ -26,7 +29,6 @@ handle(Socket, Msg) ->
 
 
 check_node_status() ->
-        catch register(check_node_status, self()),
         ets:new(tmptable, [named_table, bag]),
         
         Nodes = ringo_util:ringo_nodes(),
@@ -39,7 +41,7 @@ check_node_status() ->
         ets:insert(tmptable, [{N, {neighbors, timeout}} || N <- BadNodes]),
         
         lists:foreach(fun(Node) ->
-                spawn(Node, ringo_util, node_status, [self()])
+                spawn(Node, ringo_util, send_system_status, [self()])
         end, Nodes),
         ok = collect_results(),
 

@@ -7,7 +7,7 @@
                    scgi_server,
                    handle_ring,
                    trunc_io,
-                   handle_chunks,
+                   handle_domains,
                    handle_chunkstat]},
         {registered, []},
         {applications, [kernel, stdlib]},

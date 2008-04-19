@@ -21,17 +21,18 @@
         <div class="yui-u first">
                 <div class="rcolumn">
                 <div class="title">Ring</div>
+                <div class="legend">disk: used / use% / inode use% / vm mem</div>
                 <div class="listbox" id="ringlist"></div>
                 </div>
         </div>
         <div class="yui-u">
-                <div class="rcolumn" id="chunkbox">
-                <div class="title">Chunks</div>
+                <div class="rcolumn" id="domainbox">
+                <div class="title">Domains</div>
                 <div class="listbox"> 
                 <input type="text" length="50"></input>
-                <div id="chunklist"> 
+                <div id="domainlist"> 
+                <!--
                 <div class="listitem" id="ownritem">kel1 [<span class="hexid">5034fb761a4f2270</span>]</div>
-                <div class="listitem" id="replitem">replica on nx01:1</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
@@ -50,16 +51,17 @@
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
                 <div class="listitem" id="replitem">replica on nx01:2</div>
+                -->
                 </div>
                 </div>
                 </div>
 	</div>
     </div>
     <div class="yui-u">
-        <div class="rcolumn" id="chunkstat">
-        <div class="title">Chunk status</div>
+        <div class="rcolumn" id="domainstat">
+        <div class="title">Domain status</div>
         <table>
-        <thead><tr><td></td><td>this chunk<td><td>owner</td></tr></thead>
+        <thead><tr><td></td><td>this domain<td><td>owner</td></tr></thead>
         <tbody>
         <tr><td>hash</td><td>438dae454cd32<td><td>234eac3423e32</td></tr>
         <tr><td># entries</td><td>234<td><td>234r</td></tr>

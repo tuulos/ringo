@@ -40,25 +40,41 @@ body {
 #nodelist{
 }
 
-#chunkstat table{
+.legend{
+        color: #666;
+        font-size: 90%;
+        line-height: 1em;
+        margin-bottom: 10px;
+        margin-left: 5px;
+}
+
+#domainstat table{
         margin-left: 20px;
 }
 
-#chunkstat table thead{
+#domainstat table thead{
         color: #8f138b;
         font-weight: bold;
 }
 
-#chunkstat table td{
+#domainstat table td{
         padding-right: 20px;
 }
 
-#chunkbox{
+#domainbox{
         text-align: center;
 }
 
-#chunklist{
+#domainlist{
         text-align: left;
+}
+
+.domain{
+        color: #8f138b;
+}
+
+.chunk{
+        color: black;
 }
 
 .listitem{
@@ -67,9 +83,12 @@ body {
         padding-right: 10px;
 }
 
+.chosen{
+        background: #FFF7BF;
+}
+
 #ownritem{
         color: #8f138b;
-        background: #FFF7BF;
         font-weight: bold;
 }
 
@@ -102,6 +121,7 @@ body {
 
 .hexid{
         font-size: 90%;
+        color: black;
 }
 .host{
         color: #8f138b;
