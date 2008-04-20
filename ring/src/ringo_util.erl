@@ -36,7 +36,7 @@ validate_ring(Ring) ->
 
 domain_id(Name) -> domain_id(Name, 0).
 domain_id(Name, Chunk) when is_integer(Chunk), is_list(Name) ->
-        <<ID:64, _/binary>> = erlang:md5([integer_to_list(Chunk), " ", Name]),
+        <<ID:128>> = erlang:md5([integer_to_list(Chunk), " ", Name]),
         ID.
 
 % This function converts lists of form: [{2, A}, {3, B}, {2, C}]
