@@ -16,24 +16,25 @@ body {
 .rcolumn{
         border: 1px solid #666;
         height: 500px;
+        padding-top: 10px;
 }
 
-.rcolumn .title{
+.rtitle{
         background: #333;
         color: white;
         padding-left: 5px;
-        margin-bottom: 10px;
         text-align: left;
 }
 
 .listbox{
+        height: 100%;
         overflow: auto;
-        height: 90%;
+        white-space: nowrap;
 }
 
 .rcolumn input{
         border: 1px solid #aaa;
-        width: 97%;
+        width: 90%;
         margin-bottom: 10px;
 }
 
@@ -81,6 +82,10 @@ body {
         cursor: pointer;
         padding-left: 10px;
         padding-right: 10px;
+        line-height: 1em;        
+        padding-top: 5px;
+        padding-bottom: 5px;
+
 }
 
 .chosen{
@@ -111,14 +116,12 @@ body {
 .nodenfo{
         color: #8f138b;
 	line-height: 1.0em;
-        padding-bottom: 5px;
         margin-left: 20px;
         font-size: 90%;
 }
 
 .domainnfo{
 	line-height: 1.0em;
-        padding-bottom: 5px;
         margin-left: 20px;
         font-size: 90%;
 }
@@ -127,6 +130,7 @@ body {
 }
 
 .hexid{
+        text-transform: uppercase;
         font-size: 90%;
         color: black;
 }

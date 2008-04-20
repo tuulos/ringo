@@ -51,6 +51,7 @@ function update_ring(ringdata)
                         empty_domainlist();
                         $(this).removeClass("chosen");
                 }else{
+                        $("#ringlist > .chosen").removeClass("chosen");
                         $(this).addClass("chosen");
                         $.getJSON("/mon/domains/node?name=" +
                                 $(this).attr("node"), render_domainlist);
@@ -66,7 +67,7 @@ function empty_domainlist()
 {
         $("#domainlist > *").remove();
         $("#domainfilter").val("");
-        $("#domainbox > .title").html("Domains");
+        $("#domaintitle").html("Domains");
 }
 
 function render_domainlist(domainlist)
@@ -80,7 +81,7 @@ function render_domainlist(domainlist)
                 $.getJSON("/mon/domains/domain?id=0x" +
                         $(this).attr("domainid"), render_replicalist);
         }).length;
-        $("#domainbox > .title").html("Domains (showing " + n + "/" + n + ")");
+        $("#domaintitle").html("Domains (showing " + n + "/" + n + ")");
 }
 
 function render_replicalist(msg)
@@ -90,7 +91,7 @@ function render_replicalist(msg)
         var chunk = msg[2];
         var repl = msg[3];
         var domain = render_domain(chunk, name, repl.length, id, true);
-        $("#domainbox > .title").html("Domains");
+        $("#domainbox > .rtitle").html("Domains");
         $(domain).addClass("chosen").click(function(){
                 var chosen = $("#ringlist > .chosen");
                 if (chosen.length)
@@ -107,7 +108,7 @@ function render_replicalist(msg)
                 var t = "replica on ";
                 var st = "";
                 if (d.owner){
-                        t = "owner on";
+                        t = "owner on ";
                         st = "ownritem";
                 }
                 var thisn = nodename(d.node);
@@ -147,7 +148,7 @@ function filter_domains(txt)
                 $("#domainlist > *").css("display", "none");
                 var num = $("#domainlist > *:contains(" + txt + ")")
                         .css("display", "block").length;
-                $("#domainbox > .title").html(
+                $("#domaintitle").html(
                         "Domains (showing " + num + "/" + all_num + ")");
         }else{
                 $.getJSON("/mon/domains/domain?name=" + escape(txt),
