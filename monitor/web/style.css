@@ -93,15 +93,15 @@ body {
 }
 
 .replitem{
-        padding-left: 20px;
+        padding-left: 25px;
 }
 
 .listitem:hover{
         background: #FFDE00; 
 }
 
-.active{
-        background: #FFDE00; 
+.domain_inactive{
+        background: #f6f6f6; 
 }
 
 .warn{
@@ -111,7 +111,14 @@ body {
 .nodenfo{
         color: #8f138b;
 	line-height: 1.0em;
-        margin-bottom: 5px;
+        padding-bottom: 5px;
+        margin-left: 20px;
+        font-size: 90%;
+}
+
+.domainnfo{
+	line-height: 1.0em;
+        padding-bottom: 5px;
         margin-left: 20px;
         font-size: 90%;
 }

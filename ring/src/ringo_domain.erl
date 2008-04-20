@@ -215,6 +215,15 @@ handle_cast({put, _, _, _, _}, #domain{full = true} = D) ->
 %%% Maintenance
 %%%
 
+handle_cast({get_status, From}, #domain{id = DomainID, size = Size,
+        full = Full, owner = Owner} = D) ->
+        From ! {status, node(), 
+                [{id, DomainID},
+                 {size, Size},
+                 {full, Full},
+                 {owner, Owner}]},
+        {noreply, D};
+
 handle_cast({write_entry, _Entry}, #domain{db = none} = D) ->
         {noreply, D};
 
@@ -527,6 +536,9 @@ resync(#domain{home = Home, this = This, host = Host,
         register(resync, self()),
         [[Root]|_] = Tree = update_sync_tree(This, DBName),
         {ok, Owner, Distance} = find_owner(DomainID),
+        % BUG: Shouldn't the domain die if find_owner fails? Now it seems
+        % that only the resync process dies. Namely, how to make sure that
+        % if there're two owners, one of them will surely die.
         DiffLeaves = merkle_sync(Owner, [{0, Root}], 1, Tree),
         if DiffLeaves == [] -> ok;
         true ->

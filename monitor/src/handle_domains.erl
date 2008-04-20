@@ -5,17 +5,44 @@
                      "Status: 200 OK\n"
                      "Content-type: text/plain\n\n").
 
-op("node", Query) ->
-        {value, {_, NodeS}} = lists:keysearch("name", 1, Query),
+op("node", [{"name", NodeS}|_]) ->
         Node = list_to_existing_atom(NodeS),
         {ok, [fetch_domaininfo(X) || X <- 
                 ets:lookup(infopack_cache, {node, Node})]};
 
-op("domain", Query) ->
-        {value, {_, NameS}} = lists:keysearch("name", 1, Query),
+op("domain", [{"name", NameS}|_]) ->
         Name = list_to_binary(NameS),
         {ok, [fetch_domaininfo(X) || X <-
                 ets:lookup(infopack_cache, {name, Name})]};
+
+op("domain", [{"id", [$0, $x|IdS]}|_]) ->
+        error_logger:warning_report({"ID", IdS}),
+        op("domain", [{"id", integer_to_list(
+                erlang:list_to_integer(IdS, 16))}]);
+
+op("domain", [{"id", IdS}|_]) ->
+        DomainID = list_to_integer(IdS),
+        error_logger:warning_report({"DomainID", DomainID}),
+       
+        [{_, {Name, _, Chunk}}|_] = Repl =
+                ets:lookup(infopack_cache, {id, DomainID}),
+        error_logger:warning_report({"K2"}),
+        Nodes = [Node || {_, {_, Node, _}} <- Repl],
+        error_logger:warning_report({"K3"}),
+
+        gen_server:abcast(Nodes, ringo_node, {{domain, DomainID},
+                {get_status, self()}}),
+        error_logger:warning_report({"K4"}),
+        Status = receive_domainstatus([], length(Nodes)),
+        error_logger:warning_report({"K5"}),
+
+        {ok, [list_to_binary(erlang:integer_to_list(DomainID, 16)),
+                Name, Chunk, lists:map(fun(N) ->
+                case lists:keysearch(N, 1, Status) of
+                        {value, {_, S}} -> {obj, [{node, N}|S]};
+                        _ -> {obj, [{node, N}, {error, noreply}]}
+                end
+        end, Nodes)]};
 
 op("reset", _Query) ->
         exit(whereis(check_domains), kill),
@@ -32,19 +59,20 @@ handle(Socket, Msg) ->
 
         {value, {_, Script}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
         {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
-        
+         
         Op = lists:last(string:tokens(Script, "/")),
         {ok, Res} = op(Op, httpd:parse_query(Query)),
         gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
 
 fetch_domaininfo({_, DomainID}) ->
-        [{_, {Name, Node, Chunk}}] =
+        [{_, {Name, Node, Chunk}}|_] = Repl =
                 ets:lookup(infopack_cache, {id, DomainID}),
         Active = case catch ets:lookup(active_domains, DomainID) of
                 [{_, A}] -> A;
                 _ -> false
         end,
-        {DomainID, Name, Node, Chunk, Active}.
+        {list_to_binary(erlang:integer_to_list(DomainID, 16)),
+                Name, Node, Chunk, Active, length(Repl)}.
 
 check_domains() ->
         catch ets:new(infopack_cache, [named_table, bag]),
@@ -85,8 +113,17 @@ get_infopack(Node, DomainID) ->
                 Error -> error_logger:warning_report({"Couldn't get infopack for",
                         DomainID, "from", Node, Error})
         end.
-                        
 
+receive_domainstatus(L, 0) -> L;
+receive_domainstatus(L, N) ->
+        receive
+                {status, Node, E} ->
+                        receive_domainstatus([{Node, E}|L], N - 1);
+                _ ->
+                        receive_domainstatus(L, N)
+        after 5000 -> L
+        end.
+                
 
 
         
