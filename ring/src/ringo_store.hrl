@@ -10,5 +10,5 @@
 
 -define(NUM_MERKLE_LEAVES, 8192).
 
--record(domain, {this, owner, home, host, id, z, db, size, full,
-        sync_tree, sync_ids, sync_inbox, sync_outbox, dbname}).
+-record(domain, {this, owner, home, host, id, z, db, size, full, num_entries,
+        sync_tree, sync_ids, sync_inbox, sync_outbox, dbname, stats}).

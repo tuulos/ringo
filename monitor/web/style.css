@@ -45,21 +45,36 @@ body {
         color: #666;
         font-size: 90%;
         line-height: 1em;
-        margin-bottom: 10px;
+        margin-top: 10px;
         margin-left: 5px;
 }
 
 #domainstat table{
         margin-left: 20px;
+        display: none;
 }
 
-#domainstat table thead{
+#domainstat table thead th{
+        color: #8f138b;
+        font-weight: bold;
+}
+
+#domainstat table .rowhead{
         color: #8f138b;
         font-weight: bold;
 }
 
 #domainstat table td{
         padding-right: 20px;
+        vertical-align: top;
+}
+
+.row_expands{
+        cursor: pointer;
+}
+
+.row_expands:hover{
+        background: #FFDE00; 
 }
 
 #domainbox{
@@ -134,8 +149,12 @@ body {
         font-size: 90%;
         color: black;
 }
+
 .host{
         color: #8f138b;
-        font-weight: bold;
 }
 
+.tstamp{
+        color: #8f138b;
+        font-size: 90%;
+}

@@ -77,6 +77,7 @@
 -define(MAX_RING_SIZE, 1000000).
 -define(RESYNC_INTERVAL, 30000). % make this longer!
 -define(GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
+-define(STATS_WINDOW_LEN, 5).
 
 % replication
 -define(NREPLICAS, 3).
@@ -97,13 +98,15 @@ init([Home, DomainID, IsOwner]) ->
         random:seed(A1, A2, A3),
         Inbox = ets:new(sync_inbox, []),
         Outbox = ets:new(sync_outbox, [bag]),
+        Stats = ets:new(stats, [public]),
         erlang:monitor(process, ringo_node),
-        Path = filename:join(Home, "rdomain-" ++ integer_to_list(DomainID)),
+        Path = filename:join(Home, "rdomain-" ++
+                erlang:integer_to_list(DomainID, 16)),
 
         Domain = #domain{this = self(),
                          owner = IsOwner,
                          home = Path, 
-                         dbname = filename:join(Home, "data"),
+                         dbname = filename:join(Path, "data"),
                          host = net_adm:localhost(),
                          id = DomainID, 
                          z = zlib:open(),
@@ -112,7 +115,11 @@ init([Home, DomainID, IsOwner]) ->
                          sync_tree = none, 
                          sync_ids = none,
                          sync_inbox = Inbox,
-                         sync_outbox = Outbox},
+                         sync_outbox = Outbox,
+                         stats = Stats
+                        },
+
+        ets:insert(Stats, {started, ringo_util:format_timestamp(now())}),
 
         RTime = round(?RESYNC_INTERVAL +
                         random:uniform(?RESYNC_INTERVAL * 0.5)),
@@ -143,16 +150,19 @@ handle_call({sync_tree, H, Level}, _,
 %%%
 
 % Dump inbox or outbox
-handle_call({flush_syncbox, Box}, _From,
-        #domain{sync_inbox = Inbox, sync_outbox = Outbox} = D) ->
+handle_call({flush_syncbox, Box}, _From, #domain{sync_inbox = Inbox,
+        sync_outbox = Outbox, stats = Stats} = D) ->
 
         Tid = case Box of
                 sync_inbox -> Inbox;
                 sync_outbox -> Outbox
         end,
         L = ets:tab2list(Tid),
+        
+        stats_buffer_add(Stats, Box, length(L)),
         ets:delete_all_objects(Tid),
         {reply, {ok, L}, D};
+
 
 handle_call({update_sync_data, Tree, LeafIDs}, _, #domain{owner = true} = D) ->
         {reply, ok, D#domain{sync_tree = Tree, sync_ids = LeafIDs}};
@@ -216,12 +226,12 @@ handle_cast({put, _, _, _, _}, #domain{full = true} = D) ->
 %%%
 
 handle_cast({get_status, From}, #domain{id = DomainID, size = Size,
-        full = Full, owner = Owner} = D) ->
+        full = Full, owner = Owner, stats = Stats} = D) ->
         From ! {status, node(), 
                 [{id, DomainID},
                  {size, Size},
                  {full, Full},
-                 {owner, Owner}]},
+                 {owner, Owner}] ++ ets:tab2list(Stats)},
         {noreply, D};
 
 handle_cast({write_entry, _Entry}, #domain{db = none} = D) ->
@@ -522,24 +532,29 @@ do_write(DB, Entry, _CurrentSize, _) ->
 %%%
 
 % Owner-end in synchronization -- just update the tree
-resync(#domain{this = This, dbname = DBName, owner = true}) ->
+resync(#domain{this = This, dbname = DBName, owner = true, stats = Stats}) ->
         register(resync, self()),
-        update_sync_tree(This, DBName),
+        stats_buffer_add(Stats, sync_time, nu),
+        [[Root]|_] = update_sync_tree(This, DBName),
+        stats_buffer_add(Stats, synctree_root, Root),
         flush_sync_outbox(This, DBName);
 
 % Replica-end in synchronization -- the active party
 resync(#domain{home = Home, this = This, host = Host,
-        id = DomainID, dbname = DBName}) ->
+        id = DomainID, dbname = DBName, stats = Stats}) ->
         
         error_logger:info_report({"Replica resync", DomainID}),
 
         register(resync, self()),
+        stats_buffer_add(Stats, sync_time, nu),
         [[Root]|_] = Tree = update_sync_tree(This, DBName),
+        stats_buffer_add(Stats, synctree_root, Root),
         {ok, Owner, Distance} = find_owner(DomainID),
         % BUG: Shouldn't the domain die if find_owner fails? Now it seems
         % that only the resync process dies. Namely, how to make sure that
         % if there're two owners, one of them will surely die.
         DiffLeaves = merkle_sync(Owner, [{0, Root}], 1, Tree),
+        stats_buffer_add(Stats, diff_size, length(DiffLeaves)),
         if DiffLeaves == [] -> ok;
         true ->
                 SyncIDs = ringo_sync:collect_leaves(DiffLeaves, DBName),
@@ -653,6 +668,15 @@ find_owner(DomainID) ->
                                 DomainID}),
                 timeout
         end.        
+
+stats_buffer_add(Stats, Key, Value) ->
+        case ets:lookup(Stats, Key) of
+                [] -> ets:insert(Stats, {Key,
+                        [{ringo_util:format_timestamp(now()), Value}]});
+                [{_, W}] -> ets:insert(Stats, {Key, lists:sublist(
+                        [{ringo_util:format_timestamp(now()), Value}|W],
+                                ?STATS_WINDOW_LEN)})
+        end.
 
 
 %%% callback stubs

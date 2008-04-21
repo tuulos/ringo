@@ -119,7 +119,7 @@ handle_call(get_domainlist, From, #rnode{home = Home} = R) ->
 
 handle_call({get_infopack, DomainID}, From, #rnode{home = Home} = R) ->
         InfoFile = filename:join([Home, lists:flatten(["rdomain-",
-                integer_to_list(DomainID)]), "info"]),
+                erlang:integer_to_list(DomainID, 16)]), "info"]),
         spawn(fun() -> get_infopack(InfoFile, From) end),
         {noreply, R};
 
@@ -189,7 +189,8 @@ handle_cast({kill_node, Reason}, RNode) ->
         {stop, normal, RNode};
 
 handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
-        domain_dispatch(Home, DomainID, false, Msg),
+        Match = match(DomainID, R),
+        domain_dispatch(Home, DomainID, Match, Msg),
         {noreply, R};
 
 % Length(Ring) > 0 check ensures that no operation is performed until the
@@ -583,7 +584,7 @@ get_domainlist(Home, From) ->
         {ok, Files} = file:list_dir(Home),
         PDomains = lists:map(fun
                 ([$r, $d, $o, $m, $a, $i, $n, $-|DomainS]) ->
-                        DomainID = (catch list_to_integer(DomainS)),
+                        DomainID = (catch erlang:list_to_integer(DomainS, 16)),
                         {Alive, _} = domain_lookup(DomainID),
                         {DomainID, Alive};
                 (_) -> none

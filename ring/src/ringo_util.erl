@@ -1,7 +1,7 @@
 -module(ringo_util).
 
 -export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2,
-        group_pairs/1, send_system_status/1]).
+        group_pairs/1, send_system_status/1, format_timestamp/1]).
 
 ringo_nodes() ->
         Hosts = case net_adm:host_file() of
@@ -59,6 +59,12 @@ send_system_status(Parent) ->
         {value, {total, Mem}} = lists:keysearch(total, 1, erlang:memory()),
         Parent ! {node_results, {node(), {disk, {list_to_binary(UseB),
                 list_to_binary(UseI), list_to_binary(Used), Mem}}}}.
+
+format_timestamp(Tstamp) ->
+        {Date, Time} = calendar:now_to_local_time(Tstamp),
+        DateStr = io_lib:fwrite("~w/~.2.0w/~.2.0w ", tuple_to_list(Date)),
+        TimeStr = io_lib:fwrite("~.2.0w:~.2.0w:~.2.0w", tuple_to_list(Time)),
+        list_to_binary(DateStr ++ TimeStr).
 
 
 

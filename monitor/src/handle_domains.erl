@@ -22,19 +22,14 @@ op("domain", [{"id", [$0, $x|IdS]}|_]) ->
 
 op("domain", [{"id", IdS}|_]) ->
         DomainID = list_to_integer(IdS),
-        error_logger:warning_report({"DomainID", DomainID}),
        
         [{_, {Name, _, Chunk}}|_] = Repl =
                 ets:lookup(infopack_cache, {id, DomainID}),
-        error_logger:warning_report({"K2"}),
         Nodes = [Node || {_, {_, Node, _}} <- Repl],
-        error_logger:warning_report({"K3"}),
-
+        
         gen_server:abcast(Nodes, ringo_node, {{domain, DomainID},
                 {get_status, self()}}),
-        error_logger:warning_report({"K4"}),
         Status = receive_domainstatus([], length(Nodes)),
-        error_logger:warning_report({"K5"}),
 
         {ok, [list_to_binary(erlang:integer_to_list(DomainID, 16)),
                 Name, Chunk, lists:map(fun(N) ->
@@ -121,7 +116,7 @@ receive_domainstatus(L, N) ->
                         receive_domainstatus([{Node, E}|L], N - 1);
                 _ ->
                         receive_domainstatus(L, N)
-        after 5000 -> L
+        after 2000 -> L
         end.
                 
 
