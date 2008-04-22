@@ -18,6 +18,14 @@
 % round, probability that the same entry will be skipped on N rounds
 % is p^N, which makes it practically certain that the entry will get
 % synchronized eventually.
+make_leaf_hashes_and_ids(empty) ->
+        LeafIDs = dict:from_list(
+                [{I, <<>>} || I <- lists:seq(0, ?NUM_MERKLE_LEAVES - 1)]),
+        LeafHashes = ets:new(leaves, []),
+        ets:insert(LeafHashes,
+                [{I, 0} || I <- lists:seq(0, ?NUM_MERKLE_LEAVES - 1)]),
+        {LeafHashes, LeafIDs};
+
 make_leaf_hashes_and_ids(DBName) ->
         LeafIDs = dict:from_list(
                 [{I, <<>>} || I <- lists:seq(0, ?NUM_MERKLE_LEAVES - 1)]),
@@ -136,10 +144,11 @@ pick([_, _|Level], Parents, N, Res) ->
 %%%
 
 collect_leaves([], _) -> [];
+collect_leaves(LeafList, empty) -> [{N, []} || N <- LeafList];
 collect_leaves(LeafList, DBName) ->
         Z = zlib:open(),
         LeafBag = ets:new(leaves, [bag]),
-        ets:insert(LeafBag, [{N, x} || N <- LeafList]),
+        ets:insert(LeafBag, [{N, empty} || N <- LeafList]),
         ringo_reader:fold(fun(_, _, _, {Time, EntryID}, _, _) ->
                 {Leaf, SyncID} = sync_id(EntryID, Time),
                 case ets:member(LeafBag, Leaf) of
@@ -147,8 +156,7 @@ collect_leaves(LeafList, DBName) ->
                         false -> ok
                 end
         end, ok, DBName),
-        List = group_results([X ||
-                {_, V} = X <- ets:tab2list(LeafBag), V =/= x]),
+        List = group_results(ets:tab2list(LeafBag)),
         zlib:close(Z),
         ets:delete(LeafBag),
         List.
