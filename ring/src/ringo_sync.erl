@@ -77,7 +77,7 @@ update_leaf_hashes(Z, LeafHashes, SyncID) ->
 update_leaf_ids(LeafIDs, SyncID) ->
         Leaf = sync_id_slot(SyncID),
         Lst = dict:fetch(Leaf, LeafIDs),
-        dict:store(Leaf, <<Lst/binary, SyncID/binary>>).
+        dict:store(Leaf, <<Lst/binary, SyncID/binary>>, LeafIDs).
 
 in_leaves(LeafIDs, SyncID) ->
         Leaf = sync_id_slot(SyncID),
