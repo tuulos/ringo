@@ -40,7 +40,7 @@ op("domain", [{"id", IdS}|_]) ->
         end, Nodes)]};
 
 op("reset", _Query) ->
-        exit(whereis(check_domains), kill),
+        catch exit(whereis(check_domains), kill),
         {ok, killed}.
 
 handle(Socket, Msg) ->

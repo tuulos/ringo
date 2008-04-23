@@ -16,8 +16,11 @@ op("nodes", _Query) ->
         case catch ets:tab2list(node_status_table) of 
                 {'EXIT', _} -> {ok, []};
                 L -> {ok, check_ring(ringo_util:group_pairs(L))}
-        end.
+        end;
 
+op("reset", _Query) ->
+        catch exit(whereis(check_node_status), kill),
+        {ok, killed}.
 
 handle(Socket, Msg) ->
         {value, {_, Script}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
@@ -63,6 +66,7 @@ collect_results() ->
         after 10000 -> ok
         end.
 
+check_ring([]) -> [];
 check_ring(Nodes) ->
         % First sort the nodes according to ascending node ID
         {_, Sorted} = lists:unzip(lists:keysort(1, lists:map(fun({N, _} = T) ->

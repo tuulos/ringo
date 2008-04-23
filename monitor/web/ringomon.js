@@ -55,6 +55,7 @@ function update_ring(ringdata)
                 }).attr("node", node.node);
                 return R;
         }));
+        $("#ringtitle").html("Ring (" + ringdata.length + " nodes)")
 
         setTimeout(function(){
                 $.getJSON("/mon/ring/nodes", update_ring);
