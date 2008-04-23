@@ -481,11 +481,10 @@ find_new_successor2(#rnode{myid = MyID, route = {_, Ring}, nextnode = Next}) ->
                 {kill_node, "Predecessor finds a new successor"}),
 
         {NextNodes, PrevNodes} = lists:partition(fun({NodeID, _Node}) ->
-                NodeID > MyID end, Ring -- [{MyID, node()}]),
+                NodeID > MyID end, lists:keysort(1, [R || {ID, N} = R <- Ring,
+                        ID =/= MyID, net_adm:ping(N) == pong])),
         
-        Candidates = lists:filter(fun({_NodeID, Node}) ->
-                net_adm:ping(Node) == pong
-        end, NextNodes ++ PrevNodes),
+        Candidates = NextNodes ++ PrevNodes,
         find_new_successor3(Candidates).
 
 % Try to attach to a successor candidate.
