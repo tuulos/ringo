@@ -27,16 +27,18 @@ receive_scgi_message(Socket) ->
 
 receive_scgi_message(header, Socket, Msg) ->
         case gen_tcp:recv(Socket, 1) of
-                {ok, ":"} -> receive_scgi_message(
+                {ok, <<":">>} -> receive_scgi_message(
                         body, Socket, list_to_integer(
                                 lists:reverse(lists:flatten(Msg))));
-                {ok, C} -> receive_scgi_message(header, Socket, [C|Msg]);
+                {ok, C} -> receive_scgi_message(header, Socket,
+                                [binary_to_list(C)|Msg]);
                 _Other -> {error, invalid_scgi_header}
         end;
 
 receive_scgi_message(body, Socket, Length) ->
         case gen_tcp:recv(Socket, Length + 1) of
-                {ok, Packet} -> {ok, parse_scgi_message(Packet)};
+                {ok, Packet} -> {ok, parse_scgi_message(
+                        binary_to_list(Packet))};
                 _Other -> {error, invalid_scgi_body}
         end.
 

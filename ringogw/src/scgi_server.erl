@@ -23,7 +23,7 @@
 -behaviour(gen_server).
 
 -compile([verbose, report_errors, report_warnings, trace, debug_info]).
--define(TCP_OPTIONS, [list, {active, false}, {reuseaddr, true}, {packet, raw}]).
+-define(TCP_OPTIONS, [binary, {active, false}, {reuseaddr, true}, {packet, raw}]).
 
 -export([start_link/1, stop/0, handle_request/2, scgi_worker/1]).
 
@@ -106,9 +106,17 @@ handle_request(Socket, Msg) ->
 dispatch_request(Socket, Msg) ->
         {value, {_, Path}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
         {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
+        {value, {_, CLenStr}} = lists:keysearch("CONTENT_LENGTH", 1, Msg),
         [_, N, Script] = string:tokens(Path, "/"),
         Mod = list_to_existing_atom("handle_" ++ N),
-        {ok, Res} = Mod:op(Script, httpd:parse_query(Query)),
+        CLen = list_to_integer(CLenStr),
+        
+        if CLen > 0 ->
+                {ok, PostData} = gen_tcp:recv(Socket, CLen, 30000),
+                {ok, Res} = Mod:op(Script, httpd:parse_query(Query), PostData);
+        true ->
+                {ok, Res} = Mod:op(Script, httpd:parse_query(Query))
+        end,
         gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
 
 % callback stubs
