@@ -1,7 +1,7 @@
-{application, ringomon, [
-        {description, "Ringomon"},
+{application, ringogw, [
+        {description, "Ringogw"},
         {vsn, "1"},
-        {modules, [ringomon,
+        {modules, [ringogw,
                    scgi,
                    json,
                    scgi_server,
@@ -11,6 +11,6 @@
                    handle_chunkstat]},
         {registered, []},
         {applications, [kernel, stdlib]},
-        {mod, {ringomon, []}}
+        {mod, {ringogw, []}}
 ]}.
 

@@ -20,7 +20,7 @@ start(_Type, _Args) ->
         supervisor:start_link(ringomon, [HttpMode, Port]).
 
 init([mochi, Port]) ->
-        error_logger:info_report([{"Ringo monitor starts (Mochi)"}]),
+        error_logger:info_report([{"Ringo gateway starts (Mochi)"}]),
         {ok, {{one_for_one, ?MAX_R, ?MAX_T}, [
                  {mochiweb_http, {mochiweb_http, start, [[{port, Port},
                         {loop, {mochi_dispatch, request}}]]},
@@ -29,7 +29,7 @@ init([mochi, Port]) ->
         }};
 
 init([scgi, Port]) -> 
-        error_logger:info_report([{"Ringo monitor starts (SCGI)"}]),
+        error_logger:info_report([{"Ringo gateway starts (SCGI)"}]),
         {ok, {{one_for_one, ?MAX_R, ?MAX_T}, [
                  {scgi_server, {scgi_server, start_link, [Port]},
                         permanent, 10, worker, dynamic}

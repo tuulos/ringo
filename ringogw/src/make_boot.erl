@@ -8,14 +8,14 @@ write_scripts() ->
         {value, {stdlib, _, Stdlib}} = lists:keysearch(stdlib, 1,
                 application:loaded_applications()),
 
-        Rel = "{release, {\"Ringomon\", \"1\"}, {erts, \"~s\"}, ["
-               "{kernel, \"~s\"}, {stdlib, \"~s\"}, {ringomon, \"1\"}]}.",
+        Rel = "{release, {\"Ringogw\", \"1\"}, {erts, \"~s\"}, ["
+               "{kernel, \"~s\"}, {stdlib, \"~s\"}, {ringogw, \"1\"}]}.",
 
-        {ok, Fs} = file:open("ringomon.rel", [write]),
+        {ok, Fs} = file:open("ringogw.rel", [write]),
         io:format(Fs, Rel, [Erts, Kernel, Stdlib]),
         file:close(Fs),
         
-        systools:make_script("ringomon", [local]),
+        systools:make_script("ringogw", [local]),
         halt().
 
 
