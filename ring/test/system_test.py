@@ -77,6 +77,7 @@ def test_ring_newnodes():
         print "Launching first batch of nodes"
         if not _test_ring(10):
                 return False
+        time.sleep(10)
         print "Launching second batch of nodes"
         return _test_ring(10, 20)
 
@@ -103,13 +104,12 @@ def test_ring_randomkill():
 
 g = globals()
 for f in (f for f in g.keys() if f.startswith("test_")):
-        if len(sys.argv) > 1 and f not in sys.argv[2:]:
+        if len(sys.argv) > 2 and f not in sys.argv[2:]:
                 continue
         testname = f[5:]
         kill_node("ringotest")
         ringomon("/mon/ring/reset")
         ringomon("/mon/domains/reset")
-        node_id = 0
         time.sleep(1)
         print "*** Starting", testname
         if g[f]():
