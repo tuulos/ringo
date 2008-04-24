@@ -1,26 +1,36 @@
 -module(handle_domains).
--export([handle/2]).
+-export([op/2]).
 
 -define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
                      "Content-type: text/plain\n\n").
 
-op("node", [{"name", NodeS}|_]) ->
+op(S, Q) ->
+        V = (catch is_process_alive(whereis(check_domains))),
+        if V -> ok;
+        true -> spawn(fun() ->
+                register(check_domains, self()),
+                check_domains()
+                end)
+        end,
+        op1(S, Q).
+
+op1("node", [{"name", NodeS}|_]) ->
         Node = list_to_existing_atom(NodeS),
         {ok, [fetch_domaininfo(X) || X <- 
                 ets:lookup(infopack_cache, {node, Node})]};
 
-op("domain", [{"name", NameS}|_]) ->
+op1("domain", [{"name", NameS}|_]) ->
         Name = list_to_binary(NameS),
         {ok, [fetch_domaininfo(X) || X <-
                 ets:lookup(infopack_cache, {name, Name})]};
 
-op("domain", [{"id", [$0, $x|IdS]}|_]) ->
+op1("domain", [{"id", [$0, $x|IdS]}|_]) ->
         error_logger:warning_report({"ID", IdS}),
         op("domain", [{"id", integer_to_list(
                 erlang:list_to_integer(IdS, 16))}]);
 
-op("domain", [{"id", IdS}|_]) ->
+op1("domain", [{"id", IdS}|_]) ->
         DomainID = list_to_integer(IdS),
        
         [{_, {Name, _, Chunk}}|_] = Repl =
@@ -39,25 +49,9 @@ op("domain", [{"id", IdS}|_]) ->
                 end
         end, Nodes)]};
 
-op("reset", _Query) ->
+op1("reset", _Query) ->
         catch exit(whereis(check_domains), kill),
         {ok, killed}.
-
-handle(Socket, Msg) ->
-        V = (catch is_process_alive(whereis(check_domains))),
-        if V -> ok;
-        true -> spawn(fun() ->
-                register(check_domains, self()),
-                check_domains()
-                end)
-        end,
-
-        {value, {_, Script}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
-        {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
-         
-        Op = lists:last(string:tokens(Script, "/")),
-        {ok, Res} = op(Op, httpd:parse_query(Query)),
-        gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
 
 fetch_domaininfo({_, DomainID}) ->
         [{_, {Name, Node, Chunk}}|_] = Repl =

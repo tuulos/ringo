@@ -1,5 +1,5 @@
 -module(handle_ring).
--export([handle/2]).
+-export([op/2]).
 
 -define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
@@ -21,15 +21,6 @@ op("nodes", _Query) ->
 op("reset", _Query) ->
         catch exit(whereis(check_node_status), kill),
         {ok, killed}.
-
-handle(Socket, Msg) ->
-        {value, {_, Script}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
-        {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
-        
-        Op = lists:last(string:tokens(Script, "/")),
-        {ok, Res} = op(Op, httpd:parse_query(Query)),
-        gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
-
 
 check_node_status() ->
         ets:new(tmptable, [named_table, bag]),

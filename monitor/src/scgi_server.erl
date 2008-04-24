@@ -38,6 +38,10 @@
                    "Status: 503\r\n\r\n"
                    "503 - Service Unavailable").
 
+-define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
+                     "Status: 200 OK\n"
+                     "Content-type: text/plain\n\n").
+
 % scgi_server external interface
 
 start_link(Port) ->
@@ -101,9 +105,11 @@ handle_request(Socket, Msg) ->
 
 dispatch_request(Socket, Msg) ->
         {value, {_, Path}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
-        [_|[N|_]] = string:tokens(Path, "/"),
+        {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
+        [_, N, Script] = string:tokens(Path, "/"),
         Mod = list_to_existing_atom("handle_" ++ N),
-        Mod:handle(Socket, Msg).
+        {ok, Res} = Mod:op(Script, httpd:parse_query(Query)),
+        gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
 
 % callback stubs
 

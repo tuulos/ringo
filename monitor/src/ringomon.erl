@@ -15,13 +15,23 @@ conf(P) ->
         end.
 
 start(_Type, _Args) ->
-        ScgiPort = conf(scgi_port),
-        supervisor:start_link(ringomon, [ScgiPort]).
+        HttpMode = conf(httpmode),
+        Port = conf(port),
+        supervisor:start_link(ringomon, [HttpMode, Port]).
 
-init([ScgiPort]) -> 
-        error_logger:info_report([{"Ringo monitor starts"}]),
+init([mochi, Port]) ->
+        error_logger:info_report([{"Ringo monitor starts (Mochi)"}]),
         {ok, {{one_for_one, ?MAX_R, ?MAX_T}, [
-                 {scgi_server, {scgi_server, start_link, [ScgiPort]},
+                 {mochiweb_http, {mochiweb_http, start, [[{port, Port},
+                        {loop, {mochi_dispatch, request}}]]},
+                        permanent, 10, worker, dynamic}
+                ]
+        }};
+
+init([scgi, Port]) -> 
+        error_logger:info_report([{"Ringo monitor starts (SCGI)"}]),
+        {ok, {{one_for_one, ?MAX_R, ?MAX_T}, [
+                 {scgi_server, {scgi_server, start_link, [Port]},
                         permanent, 10, worker, dynamic}
                 ]
         }}.
