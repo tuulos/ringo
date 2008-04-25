@@ -1,18 +1,13 @@
 -module(handle_ring).
 -export([op/2]).
 
--define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
-                     "Status: 200 OK\n"
-                     "Content-type: text/plain\n\n").
-
 op("nodes", _Query) ->
-        V = (catch is_process_alive(whereis(check_node_status))),
-        if V -> ok;
-        true -> spawn(fun() ->
-                register(check_node_status, self()),
-                check_node_status()
-                end)
-        end,
+        spawn(fun() ->
+                case catch register(check_node_status, self()) of
+                        {'EXIT', _} -> ok;
+                        _ -> check_node_status()
+                end
+        end),
         case catch ets:tab2list(node_status_table) of 
                 {'EXIT', _} -> {ok, []};
                 L -> {ok, check_ring(ringo_util:group_pairs(L))}
@@ -60,11 +55,8 @@ collect_results() ->
 check_ring([]) -> [];
 check_ring(Nodes) ->
         % First sort the nodes according to ascending node ID
-        {_, Sorted} = lists:unzip(lists:keysort(1, lists:map(fun({N, _} = T) ->
-                [_, X1] = string:tokens(atom_to_list(N), "-"),
-                [ID, _] = string:tokens(X1, "@"),
-                {erlang:list_to_integer(ID, 16), T}
-        end, Nodes))),
+        {_, Sorted} = lists:unzip(ringo_util:sort_nodes(Nodes)),
+        
         % Obtain the last node's information, which will be check against the
         % first one.
         [Last|_] = lists:reverse(Sorted),

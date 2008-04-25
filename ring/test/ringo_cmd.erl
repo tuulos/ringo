@@ -9,7 +9,7 @@ request(Name, Chunk, Msg) ->
         ok = gen_server:cast({ringo_node, First},
                 {match, DomainID, domain, x, Msg}),
         receive
-                {ok, M} ->
+                {ringo_reply, DomainID, {ok, M}} ->
                         io:fwrite("Got ok: ~w~n", [M]);
                 Other ->
                         io:fwrite("Error: ~w~n", [Other])
@@ -19,7 +19,7 @@ request(Name, Chunk, Msg) ->
 
 create([Name, NReplicas]) ->
         ReplN = list_to_integer(NReplicas),
-        request(Name, 0, {new_domain, Name, 0, ReplN, self()}),
+        request(Name, 0, {new_domain, Name, 0, self(), [{nrepl, ReplN}]}),
         halt().
 
 put([Name, Key, Value]) ->

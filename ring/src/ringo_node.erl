@@ -38,8 +38,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
         terminate/2, code_change/3]).
 
--record(rnode, {myid, previd, nextid, prevnode, nextnode, route, home}).
-
+-include("ringo_node.hrl").
 
 -define(RING_ROUTE_INTERVAL, 60 * 1000000). % microseconds
 -define(RING_ZOMBIE_LIMIT, 120 * 1000000). % microseconds
@@ -189,7 +188,7 @@ handle_cast({kill_node, Reason}, RNode) ->
         {stop, normal, RNode};
 
 handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
-        Match = match(DomainID, R),
+        Match = ringo_util:match(DomainID, R),
         domain_dispatch(Home, DomainID, Match, Msg),
         {noreply, R};
 
@@ -198,7 +197,7 @@ handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
 handle_cast({match, ReqID, Op, From, Args} = Req, 
         #rnode{route = {_, Ring}, home = Home} = R) when Ring =/= [] ->
         
-        Match = match(ReqID, R),
+        Match = ringo_util:match(ReqID, R),
         error_logger:info_report({"Match", [Match, Op]}),
         if Match, Op == domain ->
                 error_logger:info_report({"Match: domain operation"}),
@@ -394,28 +393,6 @@ publish_ring_route(Ring, RNode) ->
         EndOp = fun(_, _) -> ok end,
         op(circulate, {[], NodeOp, EndOp}, node(), 1, RNode). 
                 
-
-%%% Match serves as a partitioning function for consistent hashing. Node
-%%% with ID = X serves requests in the range [X..X+1[ where X + 1 is X's
-%%% successor's ID. The last node serves requests in the range [X..inf[
-%%% and the first node in the range [0..X+1[.
-%%%
-%%% Returns true if ReqID belongs to MyID.
-
-% request matches a middle node
-match(ReqID, #rnode{myid = MyID, nextid = NextID})
-        when ReqID >= MyID, ReqID < NextID -> true;
-% request matches the last node (MyID >= NextID guarantees that the seed,
-% which is connected to itself, matches)
-match(ReqID, #rnode{myid = MyID, nextid = NextID})
-        when MyID >= NextID, ReqID >= MyID -> true;
-% request matches the first node (MyID =< PrevID guarantees that the seed,
-% which is connected to itself, matches)
-match(ReqID, #rnode{myid = MyID, previd = PrevID}) 
-        when MyID =< PrevID, ReqID =< MyID -> true;
-match(_, _) ->
-        false.
-
 %%% Logic in starting a node is as follows: We would like to connect to
 %%% the Single Right Ring (SRR) right away, that is, to the ring that
 %%% includes the globally smallest node ID (see check_parallel_rings()

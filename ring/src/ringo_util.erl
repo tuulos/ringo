@@ -1,7 +1,10 @@
 -module(ringo_util).
 
--export([ringo_nodes/0, validate_ring/1, domain_id/1, domain_id/2,
-        group_pairs/1, send_system_status/1, format_timestamp/1]).
+-export([match/2, match/4, ringo_nodes/0, validate_ring/1, domain_id/1,
+         domain_id/2, group_pairs/1, send_system_status/1,
+         format_timestamp/1, sort_nodes/1, best_matching_node/2]).
+
+-include("ringo_node.hrl").
 
 ringo_nodes() ->
         Hosts = case net_adm:host_file() of
@@ -19,6 +22,34 @@ ringo_nodes() ->
                         _ -> []
                 end
         end, Hosts))).
+
+sort_nodes(Nodes) ->
+        lists:keysort(1, lists:map(fun
+                ({N, _} = T) -> {ID, _} = nodename_to_nodeid(N), {ID, T};
+                (N) -> nodename_to_nodeid(N)
+        end, Nodes)).
+
+nodename_to_nodeid(N) ->
+        [_, X1] = string:tokens(atom_to_list(N), "-"),
+        [ID, _] = string:tokens(X1, "@"),
+        {erlang:list_to_integer(ID, 16), N}.
+
+best_matching_node(_DomainID, []) -> {error, no_nodes};
+
+best_matching_node(DomainID, [{NodeID, _}|_] = Nodes) ->
+        best_matching_node(DomainID, Nodes, NodeID + 1).
+
+best_matching_node(DomainID,
+        [{NodeID, Node}|[{NextID, _}|_] = Nodes], PrevID) ->
+
+        Match = match(DomainID, NodeID, NextID, PrevID),
+        if Match ->
+                {ok, Node};
+        true ->
+                best_matching_node(DomainID, Nodes, NodeID)
+        end;
+
+best_matching_node(_, [{_, Node}], _) -> {ok, Node}.
 
 validate_ring(Ring) ->
         Min = lists:min(Ring),
@@ -67,5 +98,17 @@ format_timestamp(Tstamp) ->
         list_to_binary(DateStr ++ TimeStr).
 
 
+%%% Match serves as a partitioning function for consistent hashing. Node
+%%% with ID = X serves requests in the range [X..X+1[ where X + 1 is X's
+%%% successor's ID. The last node serves requests in the range [X..inf[
+%%% and the first node in the range [0..X + 1[.
+%%%
+%%% Returns true if ReqID belongs to MyID.
 
+match(ReqID, #rnode{myid = MyID, nextid = NextID, previd = PrevID}) ->
+        match(ReqID, MyID, NextID, PrevID).
 
+match(ReqID, MyID, NextID, _PrevID) when ReqID >= MyID, ReqID < NextID -> true;
+match(ReqID, MyID, NextID, _PrevID) when MyID >= NextID, ReqID >= MyID -> true;
+match(ReqID, MyID, _NextID, PrevID) when MyID =< PrevID, ReqID =< MyID -> true;
+match(_, _, _, _) -> false.

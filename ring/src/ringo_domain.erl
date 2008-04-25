@@ -191,20 +191,20 @@ handle_call(get_current_state, _From, D) ->
 %%% Basic domain operations: Create, put, get 
 %%%
 
-handle_cast({new_domain, Name, Chunk, NReplicas, From},
+handle_cast({new_domain, Name, Chunk, From, Params},
         #domain{id = DomainID} = D) ->
 
-        InfoPack = [{nrepl, NReplicas},
+        InfoPack = [{nrepl, proplists:get_value(nrepl, Params)},
                     {chunk, Chunk},
                     {name, list_to_binary(Name)},
                     {id, DomainID}],
 
         case new_domain(D, InfoPack) of
                 {error, eexist} ->
-                        From ! {error, eexist},
+                        From ! {ringo_reply, DomainID, {error, eexist}},
                         {noreply, D};
                 {ok, NewD} ->     
-                        From ! {ok, {node(), self()}},
+                        From ! {ringo_reply, DomainID, {ok, {node(), self()}}},
                         {noreply, NewD}
         end;
 

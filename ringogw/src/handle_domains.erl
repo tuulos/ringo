@@ -1,18 +1,13 @@
 -module(handle_domains).
 -export([op/2]).
 
--define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
-                     "Status: 200 OK\n"
-                     "Content-type: text/plain\n\n").
-
 op(S, Q) ->
-        V = (catch is_process_alive(whereis(check_domains))),
-        if V -> ok;
-        true -> spawn(fun() ->
-                register(check_domains, self()),
-                check_domains()
-                end)
-        end,
+        spawn(fun() ->
+                case catch register(check_domains, self()) of
+                        {'EXIT', _} -> ok;
+                        _ -> check_domains()
+                end
+        end),
         op1(S, Q).
 
 op1("node", [{"name", NodeS}|_]) ->

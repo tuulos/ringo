@@ -1,4 +1,4 @@
--module(ringomon).
+-module(ringogw).
 -behaviour(supervisor).
 -behaviour(application).
 
@@ -17,7 +17,7 @@ conf(P) ->
 start(_Type, _Args) ->
         HttpMode = conf(httpmode),
         Port = conf(port),
-        supervisor:start_link(ringomon, [HttpMode, Port]).
+        supervisor:start_link(ringogw, [HttpMode, Port]).
 
 init([mochi, Port]) ->
         error_logger:info_report([{"Ringo gateway starts (Mochi)"}]),
