@@ -34,9 +34,9 @@
 -define(ERROR_500, "HTTP/1.0 500 Error\r\n"
                    "Status: 500\r\n\r\n"
                    "500 - Internal Server Error").
--define(ERROR_503, "HTTP/1.1 503 Unavailable\r\n"
-                   "Status: 503\r\n\r\n"
-                   "503 - Service Unavailable").
+-define(ERROR, "HTTP/1.1 ~w Error\r\n"
+               "Status: ~w\r\n\r\n"
+               "Content-type: text/plain\n\n").
 
 -define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
@@ -93,6 +93,9 @@ scgi_worker(LSocket) ->
 handle_request(Socket, Msg) ->
         case catch dispatch_request(Socket, Msg) of
                 ok -> null;
+                {http_error, Code, Error} ->
+                        gen_tcp:send(Socket, [io_lib:format(?ERROR, [Code, Code]),
+                                json:encode(Error)]);
                 {'EXIT', {timeout, Error}} ->
                         error_logger:info_report(["Timeout",
                                 trunc_io:fprint(Error, 500)]),
@@ -107,12 +110,17 @@ dispatch_request(Socket, Msg) ->
         {value, {_, Path}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
         {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
         {value, {_, CLenStr}} = lists:keysearch("CONTENT_LENGTH", 1, Msg),
+        {value, {_, Method}} = lists:keysearch("REQUEST_METHOD", 1, Msg),
         [_, N, Script] = string:tokens(Path, "/"),
         Mod = list_to_existing_atom("handle_" ++ N),
         CLen = list_to_integer(CLenStr),
         
-        if CLen > 0 ->
-                {ok, PostData} = gen_tcp:recv(Socket, CLen, 30000),
+        if Method == "POST" ->
+                if CLen > 0 ->
+                        {ok, PostData} = gen_tcp:recv(Socket, CLen, 30000);
+                true ->
+                        PostData = <<>>
+                end,
                 {ok, Res} = Mod:op(Script, httpd:parse_query(Query), PostData);
         true ->
                 {ok, Res} = Mod:op(Script, httpd:parse_query(Query))
