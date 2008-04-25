@@ -108,7 +108,15 @@ format_timestamp(Tstamp) ->
 match(ReqID, #rnode{myid = MyID, nextid = NextID, previd = PrevID}) ->
         match(ReqID, MyID, NextID, PrevID).
 
+% request matches a middle node
 match(ReqID, MyID, NextID, _PrevID) when ReqID >= MyID, ReqID < NextID -> true;
+
+% request matches the last node (MyID >= NextID guarantees that the seed,
+% which is connected to itself, matches)
 match(ReqID, MyID, NextID, _PrevID) when MyID >= NextID, ReqID >= MyID -> true;
+
+% request matches the first node (MyID =< PrevID guarantees that the seed,
+% which is connected to itself, matches)
 match(ReqID, MyID, _NextID, PrevID) when MyID =< PrevID, ReqID =< MyID -> true;
+
 match(_, _, _, _) -> false.

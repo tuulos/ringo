@@ -218,11 +218,11 @@ handle_cast({put, _, _, _, _From} = R, #domain{db = none,
         {noreply, D};
 
 handle_cast({put, Key, Value, Flags, From}, #domain{size = Size,
-        owner = true, full = false} = D) ->
+        owner = true, full = false, id = DomainID} = D) ->
 
         EntryID = random:uniform(4294967295),
         Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
-        From ! {ok, EntryID},
+        From ! {ringo_reply, DomainID, {ok, {node(), EntryID}}},
         case replicate(D, EntryID, Entry) of
                 chunk_full -> chunk_full(D),
                         {noreply, D#domain{full = true}};
