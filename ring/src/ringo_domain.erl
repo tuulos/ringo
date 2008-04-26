@@ -80,7 +80,6 @@
 -define(STATS_WINDOW_LEN, 5).
 
 % replication
--define(NREPLICAS, 3).
 -define(MAX_TRIES, 3).
 -define(REPL_TIMEOUT, 2000).
 
@@ -315,8 +314,8 @@ handle_cast({sync_external, _DstDir}, D) ->
         error_logger:info_report("launch rsync etc"),
         {noreply, D};
 
-handle_cast({sync_pack, From, Pack, Distance},
-        #domain{sync_ids = LeafIDs, sync_outbox = Outbox, owner = true} = D) ->
+handle_cast({sync_pack, From, Pack, Distance}, #domain{info = InfoPack,
+        sync_ids = LeafIDs, sync_outbox = Outbox, owner = true} = D) ->
 
         Requests = lists:foldl(fun({Leaf, RSyncIDs}, RequestList) ->
                 if LeafIDs == none -> 
@@ -342,7 +341,8 @@ handle_cast({sync_pack, From, Pack, Distance},
         % duplicates will be removed in flush_sync_inbox, current code works
         % correctly.
 
-        if Requests == [], Distance > ?NREPLICAS ->
+        Nrepl = proplists:get_value(nrepl, InfoPack),
+        if Requests == [], Distance > Nrepl ->
                 gen_server:cast(From, {kill_domain, "Distant domain"});
         Requests == [] -> ok;
         true ->
@@ -480,14 +480,15 @@ chunk_full(#domain{home = Home, db = DB}) ->
 %%% Put with replication
 %%%
 
-replicate(#domain{db = DB, size = Size, id = DomainID},
+replicate(#domain{db = DB, size = Size, id = DomainID, info = InfoPack},
         EntryID, Entry) ->
 
+        Nrepl = proplists:get_value(nrepl, InfoPack),
         DServer = self(),
         case do_write(DB, Entry, Size, new_entry) of
                 chunk_full -> chunk_full;
                 _ -> spawn(fun() -> replicate_proc(
-                        {DServer, DomainID, EntryID, Entry}, 0)
+                        {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
                         end)
         end.
 
@@ -495,7 +496,7 @@ replicate_proc(_, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
         failed;
 
-replicate_proc({DServer, DomainID, EntryID, Entry} = R, Tries) ->
+replicate_proc({DServer, DomainID, EntryID, Entry, Nrepl} = R, Tries) ->
         % XXX: This is the correct line:
         %Me = {net_adm:localhost(), node(), self()},
         % XXX: This is for debugging:
@@ -504,8 +505,8 @@ replicate_proc({DServer, DomainID, EntryID, Entry} = R, Tries) ->
         {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
         error_logger:info_report({"Repl Prev", Prev}),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
-                {repl_put, EntryID, Entry, Me, DServer, ?NREPLICAS}}),
-        receive_repl_replies(R, Tries, ?NREPLICAS).
+                {repl_put, EntryID, Entry, Me, DServer, Nrepl}}),
+        receive_repl_replies(R, Tries, Nrepl).
 
 receive_repl_replies(_, _, 0) -> ok;
 receive_repl_replies({_, _, EntryID, _} = R, Tries, N) ->
