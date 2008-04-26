@@ -15,7 +15,7 @@ op("nodes", _Query) ->
 
 op("reset", _Query) ->
         catch exit(whereis(check_node_status), kill),
-        {ok, killed}.
+        {ok, {ok, <<"killed">>}}.
 
 check_node_status() ->
         ets:new(tmptable, [named_table, bag]),

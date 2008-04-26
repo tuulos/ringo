@@ -36,21 +36,22 @@ op1([C|_] = Domain, Params, _Data) when is_integer(C) ->
                 T = proplists:get_value(timeout, PParams),
                 case ringo_receive(DomainID, T) of
                         {ok, {Node, _Pid}} ->
-                                {ok, {ok, <<"domain created">>, Node}};
+                                {ok, {ok, <<"domain created">>,
+                                        {Node, formatid(DomainID)}}};
                         {error, eexist} ->
                                 {ok, {error, <<"domain already exists">>}};
                         Error ->
-                                error_logger:warn_report(
+                                error_logger:warning_report(
                                         {"Unknown create reply", Error}),
                                 throw({'EXIT', Error})
                 end;
         true ->
-                throw({http_error, 400, "Create flag missing"})
+                throw({http_error, 400, <<"Create flag missing">>})
         end;
 
 % PUT
 op1([_Domain, Key], _Params, _Value) when length(Key) > ?KEY_MAX ->
-        throw({http_error, 400, "Key too large"});
+        throw({http_error, 400, <<"Key too large">>});
 
 op1([Domain, Key], Params, Value) ->
         PParams = parse_params(Params, ?PUT_DEFAULTS),
@@ -61,15 +62,20 @@ op1([Domain, Key], Params, Value) ->
         % CHUNK FIX: If chunk 0 fails, try chunk C + 1 etc.
         {ok, DomainID} = ringo_send(Domain, 0, 
                 {put, list_to_binary(Key), Value, Flags, self()}),
+       
         T = proplists:get_value(timeout, PParams),
         case ringo_receive(DomainID, T) of
                 {ok, {Node, EntryID}} ->
-                        {ok, {ok, <<"put ok">>, Node, EntryID}};
+                        {ok, {ok, <<"put ok">>, Node,
+                                formatid(DomainID), formatid(EntryID)}};
                 Error ->
                         error_logger:warning_report(
                                 {"Unknown put reply", Error}),
                         throw({'EXIT', Error})
-        end.
+        end;
+
+op1(_, _, _) ->
+        throw({http_error, 400, <<"Invalid request">>}).
 
 op(Script, Params) ->
         spawn(fun update_active_nodes/0),
@@ -78,7 +84,10 @@ op(Script, Params) ->
 % GET
 op1([Domain, Key], _Params) ->
         error_logger:info_report({"GET", Domain, "KEY", Key}),
-        {ok, []}.
+        {ok, []};
+
+op1(_, _) ->
+        throw({http_error, 400, <<"Invalid request">>}).
 
 %%%
 %%% Ringo communication
@@ -88,10 +97,12 @@ ringo_send(Domain, Chunk, Msg) ->
         DomainID = ringo_util:domain_id(Domain, Chunk),
         case ringo_util:best_matching_node(DomainID, get_active_nodes()) of
                 {ok, Node} -> 
-                error_logger:info_report({"DOMAIN", DomainID, "BEST NODE", Node}),
-                gen_server:cast({ringo_node, Node},
-                                {match, DomainID, domain, self(), Msg});
-                {error, no_nodes} -> throw({http_error, 503, "Empty ring"});
+                        error_logger:info_report(
+                                {"DOMAIN", DomainID, "BEST NODE", Node}),
+                        gen_server:cast({ringo_node, Node}, {match, 
+                                DomainID, domain, self(), Msg});
+                {error, no_nodes} ->
+                        throw({http_error, 503, <<"Empty ring">>});
                 Error -> throw({'EXIT', Error})
         end,
         {ok, DomainID}.
@@ -104,7 +115,7 @@ ringo_receive(DomainID, Timeout) ->
                 {ringo_reply, DomainID, Reply} -> Reply;
                 Other -> Other
         after Timeout ->
-                throw({http_error, 408, "Request timeout"})
+                throw({http_error, 408, <<"Request timeout">>})
         end.
 
 %%%
@@ -125,6 +136,9 @@ parse_params(Params, Defaults) ->
 
 parse_flags(Params, AllowedFlags) ->
         [P || {K, _} = P <- Params, proplists:is_defined(K, AllowedFlags)].
+
+formatid(ID) ->
+        list_to_binary(erlang:integer_to_list(ID, 16)).
 
 %%%
 %%% Node list update
@@ -163,6 +177,5 @@ update_active_nodes(Nodes) ->
         end.
 
 active_nodes() ->
-        error_logger:info_report({"UPDATE ACTIVE NODES"}),
         ringo_util:sort_nodes(ringo_util:ringo_nodes()).
         

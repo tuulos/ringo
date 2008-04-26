@@ -33,10 +33,10 @@
 -define(ERROR_REDIRECT, "Location: /\r\n\r\n").
 -define(ERROR_500, "HTTP/1.0 500 Error\r\n"
                    "Status: 500\r\n\r\n"
-                   "500 - Internal Server Error").
+                   "\"500 - Internal Server Error\"").
 -define(ERROR, "HTTP/1.1 ~w Error\r\n"
-               "Status: ~w\r\n\r\n"
-               "Content-type: text/plain\n\n").
+               "Status: ~w\r\n"
+               "Content-type: text/plain\r\n\r\n").
 
 -define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
@@ -107,11 +107,17 @@ handle_request(Socket, Msg) ->
         end.
 
 dispatch_request(Socket, Msg) ->
-        {value, {_, Path}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
+        {value, {_, Path1}} = lists:keysearch("SCRIPT_NAME", 1, Msg),
+        {value, {_, Path2}} = lists:keysearch("PATH_INFO", 1, Msg),
         {value, {_, Query}} = lists:keysearch("QUERY_STRING", 1, Msg),
         {value, {_, CLenStr}} = lists:keysearch("CONTENT_LENGTH", 1, Msg),
         {value, {_, Method}} = lists:keysearch("REQUEST_METHOD", 1, Msg),
-        [_, N, Script] = string:tokens(Path, "/"),
+        [_, N, Script] = case string:tokens(
+                lists:flatten([Path1, Path2]), "/") of
+                [_, _, _] = R -> R;
+                [_, N1, S1|R] -> [none, N1, [S1|R]]
+        end,
+                
         Mod = list_to_existing_atom("handle_" ++ N),
         CLen = list_to_integer(CLenStr),
         
@@ -125,6 +131,7 @@ dispatch_request(Socket, Msg) ->
         true ->
                 {ok, Res} = Mod:op(Script, httpd:parse_query(Query))
         end,
+        error_logger:info_report({"Request processed in ", Res}),
         gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
 
 % callback stubs

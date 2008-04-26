@@ -46,7 +46,7 @@ op1("domain", [{"id", IdS}|_]) ->
 
 op1("reset", _Query) ->
         catch exit(whereis(check_domains), kill),
-        {ok, killed}.
+        {ok, {ok, <<"killed">>}}.
 
 fetch_domaininfo({_, DomainID}) ->
         [{_, {Name, Node, Chunk}}|_] = Repl =

@@ -1,4 +1,5 @@
-import tempfile, os, subprocess, md5, time, cjson, sys, httplib, random
+import tempfile, os, subprocess, md5, time, sys, random
+import ringogw
 
 home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
 node_id = 0
@@ -18,18 +19,29 @@ def new_node():
 def kill_node(id):
         subprocess.call(["pkill", "-f", id])
 
-def ringomon(req):
-        global conn
-        if conn == None:
-                conn = httplib.HTTPConnection(sys.argv[1])
-        try:
-                conn.request("GET", req)
-                r = conn.getresponse()
-                resp = r.read()
-                return cjson.decode(resp)
-        except httplib.BadStatusLine:
-                conn = None
-                return ringomon(req)
+#def ringogw(req, data = None):
+#        global conn
+#        if conn == None:
+#                print "PIIP"
+#                conn = httplib.HTTPConnection(sys.argv[1])
+#        try:
+#                t = time.time()
+#                if data == None:
+#                        conn.request("GET", req)
+#                else:
+#                        conn.request("POST", req, data)
+#                r = conn.getresponse()
+#                resp = r.read()
+#                print "Got response in %dms" % ((time.time() - t) * 1000)
+#                return cjson.decode(resp)
+#        except httplib.BadStatusLine:
+#                conn = None
+#                return ringogw(req, data)
+
+def check_reply(reply):
+        if reply[0] != 'ok':
+                raise Exception("Invalid reply: %s" % reply)
+        return reply[2:]
 
 def _check_results(nodes, num):
         l = len([node for node in nodes if node['ok']])
@@ -59,7 +71,7 @@ def _wait_until(req, check, timeout):
         print "Checking results",
         for i in range(timeout):
                 time.sleep(1)
-                r = ringomon(req)
+                r = ringogw.request(req)
                 if check(r):
                         print
                         return True
@@ -100,16 +112,43 @@ def test_ring_randomkill():
                 print "Ring healed in %d seconds" % (time.time() - t)
                 return True
         return False
-        
 
+def test_basicput():
+        id, proc = new_node()
+        print "Waiting for the ring to settle down..."
+        time.sleep(5)
+        check_reply(ringogw.request("/mon/data/basicput?create", ""))
+        t = time.time()
+        for i in range(100):
+                check_reply(ringogw.request("/mon/data/basicput/item-%d" % i,
+                        "testitem-%d" % i))
+        print "100 items put in %dms" % ((time.time() - t) * 1000)
+        
+        return True
+
+
+
+        
+# 1. (1 domain) create, put -> check that succeeds, number of entries
+# 2. (2 domains) create, put -> succeeds, replicates, #entries
+# 3. (10 domains) create put -> succeeds, replicates, #entries
+# 4. (1 domain) create, put, add new domain (replica), check that replicates
+# 5. (1 domain) create, put, add new domain (new owner), check that owner moves
+#        correctly and replicates
+# 6. (2 domains) create, put, kill owner, put, check that works
+# 7. (100 domains) create N domains, put entries, killing random domains at the
+#        same time, check that all entries available in the end
+# - same with large, external entries
+        
+ringogw.sethost(sys.argv[1])
 g = globals()
 for f in (f for f in g.keys() if f.startswith("test_")):
         if len(sys.argv) > 2 and f not in sys.argv[2:]:
                 continue
         testname = f[5:]
         kill_node("ringotest")
-        ringomon("/mon/ring/reset")
-        ringomon("/mon/domains/reset")
+        ringogw.request("/mon/ring/reset")
+        ringogw.request("/mon/domains/reset")
         time.sleep(1)
         print "*** Starting", testname
         if g[f]():
