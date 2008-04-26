@@ -32,14 +32,17 @@ def request(url, data = None, verbose = False, keep_alive = False):
         curl.setopt(curl.WRITEFUNCTION, buf.write)
         curl.perform()
         b = buf.getvalue()
-        #print "B", curl.getinfo(curl.HTTP_CODE)
+        # FIXME: Add automatic re-requesting if return code is
+        # "request timeout"
+        code = curl.getinfo(curl.HTTP_CODE)
         if verbose:
                 print "Request took %.2fms" %\
                         (curl.getinfo(curl.TOTAL_TIME) * 1000.0)
         
         if not keep_alive:
                 curl = None
-        return cjson.decode(b)
+        
+        return code, cjson.decode(b)
 
         
 

@@ -5,11 +5,12 @@ home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
 node_id = 0
 conn = None
 
-def new_node():
+def new_node(id = None):
         global node_id
-        id = md5.md5("test-%d" % node_id).hexdigest()
+        if id == None:
+                id = md5.md5("test-%d" % node_id).hexdigest()
+                node_id += 1
         path = home_dir + id
-        node_id += 1
         os.mkdir(path)
         p = subprocess.Popen(["start_ringo.sh", path],
                 stdin = subprocess.PIPE, stdout = subprocess.PIPE,
@@ -19,31 +20,47 @@ def new_node():
 def kill_node(id):
         subprocess.call(["pkill", "-f", id])
 
-#def ringogw(req, data = None):
-#        global conn
-#        if conn == None:
-#                print "PIIP"
-#                conn = httplib.HTTPConnection(sys.argv[1])
-#        try:
-#                t = time.time()
-#                if data == None:
-#                        conn.request("GET", req)
-#                else:
-#                        conn.request("POST", req, data)
-#                r = conn.getresponse()
-#                resp = r.read()
-#                print "Got response in %dms" % ((time.time() - t) * 1000)
-#                return cjson.decode(resp)
-#        except httplib.BadStatusLine:
-#                conn = None
-#                return ringogw(req, data)
+def domain_id(name, chunk):
+        return md5.md5("%d %s" % (chunk, name)).hexdigest()
 
 def check_reply(reply):
-        if reply[0] != 'ok':
-                raise Exception("Invalid reply: %s" % reply)
-        return reply[2:]
+        if reply[0] != 200 or reply[1][0] != 'ok':
+                raise Exception("Invalid reply (code: %d): %s" %\
+                        (reply[0], reply[1]))
+        return reply[1][2:]
 
-def _check_results(nodes, num):
+def check_entries(r, nrepl, nentries):
+        #print "R", r
+        if r[0] != 200:
+                return False
+        if len(r[1][3]) != nrepl:
+                return False
+
+        owner_root = -2
+        roots = []
+        for node in r[1][3]:
+                num = node["num_entries"]
+                #print "NUM", num, nentries
+                if num == "undefined" or int(num) != nentries:
+                        return False
+                root = -1
+                if "synctree_root" in node:
+                        root = node["synctree_root"][0][1]
+                        roots.append(root)
+                if node["owner"]:
+                        owner_root = root
+
+        #print "ROOT", owner_root, "ROOTS", roots
+        if len(roots) != nrepl:
+                return False
+
+        # check that root hashes match
+        return [r for r in roots if r != owner_root] == []
+
+def _check_results(reply, num):
+        if reply[0] != 200:
+                return False
+        nodes = reply[1]
         l = len([node for node in nodes if node['ok']])
         return len(nodes) == l == num
 
@@ -66,7 +83,6 @@ def _test_ring(n, num = None):
                 return True
         return False
 
-
 def _wait_until(req, check, timeout):
         print "Checking results",
         for i in range(timeout):
@@ -76,16 +92,17 @@ def _wait_until(req, check, timeout):
                         print
                         return True
                 sys.stdout.write(".")
+        print "Timeout"
         print
         return False
 
-def test_ring10():
+def test01_ring10():
         return _test_ring(10)
 
-def test_ring100():
+def test02_ring100():
         return _test_ring(100)
 
-def test_ring_newnodes():
+def test03_ring_newnodes():
         print "Launching first batch of nodes"
         if not _test_ring(10):
                 return False
@@ -93,7 +110,7 @@ def test_ring_newnodes():
         print "Launching second batch of nodes"
         return _test_ring(10, 20)
 
-def test_ring_randomkill():
+def test04_ring_randomkill():
         res = []
         print "Launching nodes",
         for i in range(50):
@@ -108,30 +125,92 @@ def test_ring_randomkill():
                 kill_node(id)
         t = time.time()
         if _wait_until("/mon/ring/nodes", 
-                lambda x: _check_results(x, 27), 60):
+                        lambda x: _check_results(x, 27), 60):
                 print "Ring healed in %d seconds" % (time.time() - t)
                 return True
         return False
 
-def test_basicput():
-        id, proc = new_node()
-        print "Waiting for the ring to settle down..."
-        time.sleep(5)
-        check_reply(ringogw.request("/mon/data/basicput?create", ""))
+def _test_repl(name, n, nrepl, nitems, create_ring = True):
+        if create_ring and not _test_ring(n):
+                return False
+        node, domainid = check_reply(ringogw.request(
+                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
+        print "Create domain", domainid
         t = time.time()
-        for i in range(100):
-                check_reply(ringogw.request("/mon/data/basicput/item-%d" % i,
+        for i in range(nitems):
+                check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
                         "testitem-%d" % i))
-        print "100 items put in %dms" % ((time.time() - t) * 1000)
+        print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
+        return _wait_until("/mon/domains/domain?id=0x" + domainid,
+                lambda x: check_entries(x, n, nitems), 50)
+
+def test05_replication1():
+        return _test_repl("test_replication1", 1, 1, 100)
+
+def test06_replication50():
+        return _test_repl("test_replication50", 50, 50, 100)
+
+def test07_addreplica(first_owner = True):
+        if first_owner:
+                name = "addreplicas_test"
+        else:
+                name = "addowner_test"
+        check1 = lambda x: _check_results(x, 1)
+        check2 = lambda x: _check_results(x, 2)
+        did = domain_id(name, 0)
+        # a node id that is guaranteed to become owner for the domain
+        owner_id = real_owner = hex(int(did, 16) - 1)[2:-1]
+        # a node id that is guaranteed to become replica for the domain
+        repl_id = hex(int(did, 16) + 1)[2:-1]
         
-        return True
+        if not first_owner:
+                tmp = repl_id
+                repl_id = owner_id
+                owner_id = tmp
 
+        new_node(owner_id)
+        print "Waiting for ring to converge:"
+        if not _wait_until("/mon/ring/nodes", check1, 30):
+                print "Ring didn't converge"
+                return False
+        print "Creating and populating the domain:"
+        if not _test_repl(name, 1, 2, 50, False):
+                print "Couldn't create and populate the domain"
+                return False
+        
+        if first_owner:
+                print "Adding a new replica:"
+        else:
+                print "Adding a new owner:"
 
+        new_node(repl_id)
+        if not _wait_until("/mon/ring/nodes", check2, 30):
+                print "Ring didn't converge"
+                return False
+        
+        re = ringogw.request("/mon/domains/domain?id=0x" + did)
+        print "RE", re 
+        repl = re[1][3]
+
+        if real_owner in [r['node'] for r in repl if r['owner']][0]:
+                print "Owner matches"
+        else:
+                print "Invalid owner for domain %s (should be %s), got: %s" %\
+                        (did, owner_id, repl)
+                return False
+        
+
+        print "Waiting for resync (timeout 180s, be patient):"
+        return _wait_until("/mon/domains/domain?id=0x" + did,
+                lambda x: check_entries(x, 2, 51), 180)
+
+def test08_addowner():
+        test07_addreplica(False)
 
         
-# 1. (1 domain) create, put -> check that succeeds, number of entries
-# 2. (2 domains) create, put -> succeeds, replicates, #entries
-# 3. (10 domains) create put -> succeeds, replicates, #entries
+# X 1. (1 domain) create, put -> check that succeeds, number of entries
+# X 2. (2 domains) create, put -> succeeds, replicates, #entries
+# X 3. (10 domains) create put -> succeeds, replicates, #entries
 # 4. (1 domain) create, put, add new domain (replica), check that replicates
 # 5. (1 domain) create, put, add new domain (new owner), check that owner moves
 #        correctly and replicates
@@ -141,17 +220,16 @@ def test_basicput():
 # - same with large, external entries
         
 ringogw.sethost(sys.argv[1])
-g = globals()
-for f in (f for f in g.keys() if f.startswith("test_")):
-        if len(sys.argv) > 2 and f not in sys.argv[2:]:
+for f in sorted([f for f in globals().keys() if f.startswith("test")]):
+        prefix, testname = f.split("_", 1)
+        if len(sys.argv) > 2 and testname not in sys.argv[2:]:
                 continue
-        testname = f[5:]
         kill_node("ringotest")
         ringogw.request("/mon/ring/reset")
         ringogw.request("/mon/domains/reset")
         time.sleep(1)
         print "*** Starting", testname
-        if g[f]():
+        if globals()[f]():
                 print "+++ Test", testname, "successful"
         else:
                 print "--- Test", testname, "failed"
