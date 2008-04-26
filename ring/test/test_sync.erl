@@ -30,12 +30,15 @@ basic_tree_test(Entries) ->
                 [lists:nth(round(length(Slots) / 2), Slots)]),
         io:fwrite("Max slot ~b entries~n", [lists:max(Slots)]),
 
+        C = ringo_sync:count_entries(LeafLists),
+        io:fwrite("Count_entries found ~b entries~n", [C]),
+
         Sum = lists:sum(Slots),
-        if Sum == Entries ->
+        if Sum == Entries, Sum == C ->
                 io:fwrite("~b Entry IDs in total (ok)~n", [Sum]);
         true ->
-                io:fwrite("~b Entry IDs in total (should be ~b)~n",
-                        [Sum, Entries]),
+                io:fwrite("~b Entry IDs, ~b according to count_entries, "
+                          "in total (should be ~b)~n", [Sum, C, Entries]),
                 halt()
         end,
 

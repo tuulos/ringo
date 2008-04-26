@@ -113,6 +113,7 @@ init([Home, DomainID, IsOwner]) ->
                      db = none,
                      full = false,
                      sync_tree = none, 
+                     num_entries = undefined,
                      sync_ids = none,
                      sync_inbox = Inbox,
                      sync_outbox = Outbox,
@@ -371,9 +372,10 @@ handle_cast({find_owner, Node, N},
         end;
 
 handle_cast({get_status, From}, #domain{id = DomainID, size = Size,
-        full = Full, owner = Owner, stats = Stats} = D) ->
+        num_entries = NumE, full = Full, owner = Owner, stats = Stats} = D) ->
         From ! {status, node(), 
                 [{id, DomainID},
+                 {num_entries, NumE},
                  {size, Size},
                  {full, Full},
                  {owner, Owner}] ++ ets:tab2list(Stats)},
@@ -383,6 +385,8 @@ handle_cast({kill_domain, Reason}, D) ->
         error_logger:info_report({"Domain killed: ", Reason}),
         {stop, normal, D};
 
+handle_cast({update_num_entries, N}, D) ->
+        {noreply, D#domain{num_entries = N}};
 
 handle_cast(Msg, R) ->
         error_logger:info_report({"Unknown cast", Msg}),
@@ -622,6 +626,8 @@ update_sync_tree(This, DBName) ->
         {ok, Inbox} = gen_server:call(This, {flush_syncbox, sync_inbox}),
         %error_logger:info_report({"INBOX", Inbox}),
         {LeafHashes, LeafIDs} = ringo_sync:make_leaf_hashes_and_ids(DBName),
+        gen_server:cast(This, {update_num_entries,
+                ringo_sync:count_entries(LeafIDs)}),
         %error_logger:info_report({"LeafIDs", LeafIDs}),
         Entries = lists:filter(fun({SyncID, _, _}) ->
                 not ringo_sync:in_leaves(LeafIDs, SyncID)

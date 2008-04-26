@@ -3,7 +3,7 @@
 -export([make_leaf_hashes_and_ids/1, make_leaf_hashes/1,
          make_leaf_hashes/3, build_merkle_tree/1,
          sync_id/2, sync_id_slot/1, update_leaf_ids/2, update_leaf_hashes/3,
-         collect_leaves/2, in_leaves/2, diff_parents/3,
+         collect_leaves/2, in_leaves/2, diff_parents/3, count_entries/1,
          pick_children/3]).
 
 -include("ringo_store.hrl").
@@ -60,6 +60,11 @@ make_leaf_hashes(DBName, F, Acc0) ->
         end, Acc0, DBName),
         zlib:close(Z),
         {LeafHashes, AccF}.
+
+count_entries(LeafIDs) ->
+        dict:fold(fun(_Leaf, IDList, N) ->
+                N + size(IDList) div 8
+        end, 0, LeafIDs).
 
 build_merkle_tree(LeafHashes) ->
         Z = zlib:open(),
