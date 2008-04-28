@@ -14,14 +14,15 @@ def sethost(url):
 # multiple requests, doing it seems to slow things down considerably.
 # The first request is fast but requests after that are not (except 
 # some requests occasionally with the lighttpd/scgi combination). Weird.
-def request(url, data = None, verbose = False, keep_alive = False):
+def request(url, data = None, verbose = False,
+            keep_alive = False, retries = 0):
         global curl
         if not url.startswith("http://"):
-                url = host + url
+                purl = host + url
 
         if not (curl and keep_alive):
                 curl = pycurl.Curl()
-        curl.setopt(curl.URL, url)
+        curl.setopt(curl.URL, purl)
         if data == None:
                 curl.setopt(curl.HTTPGET, 1)
         else:
@@ -47,8 +48,14 @@ def request(url, data = None, verbose = False, keep_alive = False):
         
         if not keep_alive:
                 curl = None
- 
-        return code, cjson.decode(b)
+
+        # Request timeout
+        if code == 408 and retries > 0:
+                time.sleep(0.1)
+                return request(url, data, verbose,
+                        keep_alive, retries - 1)
+        else: 
+                return code, cjson.decode(b)
 
         
 
