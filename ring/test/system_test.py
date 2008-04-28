@@ -1,9 +1,12 @@
-import tempfile, os, subprocess, md5, time, sys, random
+import tempfile, os, os.path, subprocess, md5, time, sys, random
 import ringogw
 
 home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
 node_id = 0
 conn = None
+
+class ReplyException(Exception):
+        pass
 
 def new_node(id = None):
         global node_id
@@ -11,7 +14,8 @@ def new_node(id = None):
                 id = md5.md5("test-%d" % node_id).hexdigest()
                 node_id += 1
         path = home_dir + id
-        os.mkdir(path)
+        if not os.path.exists(path):
+                os.mkdir(path)
         p = subprocess.Popen(["start_ringo.sh", path],
                 stdin = subprocess.PIPE, stdout = subprocess.PIPE,
                         stderr = subprocess.PIPE)
@@ -25,8 +29,11 @@ def domain_id(name, chunk):
 
 def check_reply(reply):
         if reply[0] != 200 or reply[1][0] != 'ok':
-                raise Exception("Invalid reply (code: %d): %s" %\
+                e = ReplyException("Invalid reply (code: %d): %s" %\
                         (reply[0], reply[1]))
+                e.retcode = reply[0]
+                e.retvalue = reply[1]
+                raise e 
         return reply[1][2:]
 
 def check_entries(r, nrepl, nentries):
@@ -128,11 +135,11 @@ def test04_ring_randomkill():
                 return True
         return False
 
-def _put_entries(name, nitems):
+def _put_entries(name, nitems, retries = 0):
         t = time.time()
         for i in range(nitems):
                 check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
-                        "testitem-%d" % i))
+                        "testitem-%d" % i, retries = retries))
         print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
 
 def _test_repl(name, n, nrepl, nitems, create_ring = True):
@@ -190,7 +197,6 @@ def test07_addreplica(first_owner = True):
        
         _put_entries(name, 50)
 
-
         print "Waiting for resync (timeout 300s, be patient):"
         if not _wait_until("/mon/domains/domain?id=0x" + did,
                 lambda x: check_entries(x, 2, 100), 300):
@@ -212,13 +218,46 @@ def test07_addreplica(first_owner = True):
 def test08_addowner():
         return test07_addreplica(False)
 
+def test09_killowner():
+        if not _test_ring(10):
+                return False
+
+        print "Create and populate domain"
+        node, domainid = check_reply(
+                ringogw.request("/mon/data/killowner?create&nrepl=5", ""))[0]
+        _put_entries("killowner", 50)
+        
+        kill_id = node.split('@')[0].split("-")[1]
+        print "Kill owner", kill_id
+        kill_node(kill_id)
+       
+        print "Put 50 entries:"
+        _put_entries("killowner", 50, retries = 10)
+        if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: check_entries(x, 6, 100), 300):
+                print "Resync didn't finish in time"
+                return False
+       
+        print "Owner reincarnates"
+        new_node(kill_id)
+        
+        print "Put 50 entries:"
+        _put_entries("killowner", 50, retries = 10)
+        
+        if _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: check_entries(x, 7, 150), 300):
+                return True
+        else:
+                print "Resync didn't finish in time"
+                return False
+
         
 # X 1. (1 domain) create, put -> check that succeeds, number of entries
 # X 2. (2 domains) create, put -> succeeds, replicates, #entries
 # X 3. (10 domains) create put -> succeeds, replicates, #entries
-# 4. (1 domain) create, put, add new domain (replica), check that replicates
-# 5. (1 domain) create, put, add new domain (new owner), check that owner moves
-#        correctly and replicates
+# X 4. (1 domain) create, put, add new domain (replica), check that replicates
+# X 5. (1 domain) create, put, add new domain (new owner), check that owner moves
+# X       correctly and replicates
 # 6. (2 domains) create, put, kill owner, put, check that works
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end

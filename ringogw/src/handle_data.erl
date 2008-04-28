@@ -120,6 +120,8 @@ ringo_receive(DomainID, Timeout) ->
                 {ringo_reply, DomainID, Reply} -> Reply;
                 Other -> Other
         after Timeout ->
+                % Ring may have changed, update node list immediately
+                active_node_updater ! update,
                 throw({http_error, 408, <<"Request timeout">>})
         end.
 
