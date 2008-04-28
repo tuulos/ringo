@@ -1,5 +1,5 @@
 -module(test_sync).
--export([basic_tree_test/1, idlist_test/0, diff_test/1]).
+-export([basic_tree_test/1, idlist_test/0, diff_test/1, order_test/1]).
 
 -include("ringo_store.hrl").
 
@@ -86,8 +86,6 @@ diff_test(Entries) when is_list(Entries) ->
         diff_test(list_to_integer(lists:flatten(Entries)));
 
 diff_test(Entries) ->
-        Z = zlib:open(),
-        
         Mods = lists:map(fun(_) ->
                 EntryID = random:uniform(4294967295),
                 ringo_sync:sync_id(EntryID, 0)
@@ -101,7 +99,7 @@ diff_test(Entries) ->
         [] = merkle_diff(1, [{0, RootA}], TreeA, TreeA),
         io:fwrite("Identical trees diff test passed.~n", []),
         
-        [ringo_sync:update_leaf_hashes(Z, LeafHashes, ID) || ID <- SyncIDs],
+        [ringo_sync:update_leaf_hashes(LeafHashes, ID) || ID <- SyncIDs],
         [[RootB]|_] = TreeB = ringo_sync:build_merkle_tree(LeafHashes),
 
         S1 = now(),
@@ -125,6 +123,45 @@ diff_test(Entries) ->
                 io:fwrite("Merkle_diff FAILS!~n"),
                 io:fwrite("Found changes in ~w. Actually ~w were changed.",
                         [Diff2, ChangedLeaves])
+        end,
+        halt().
+
+order_test(Entries) when is_list(Entries) ->
+        order_test(list_to_integer(lists:flatten(Entries)));
+
+order_test(NEntries) ->
+        {ok, DB1} = file:open("test_data/orderdata1", [raw, append]),
+        Domain1 = #domain{home = "test_data", db = DB1, z = zlib:open()},
+        
+        {_, Entries} = lists:unzip(lists:sort(lists:map(fun(_) ->
+                EntryID = random:uniform(4294967295),
+                Entry = ringo_writer:make_entry(Domain1,
+                        EntryID, <<>>, <<>>, []),
+                ok = ringo_writer:write_entry(DB1, Entry),
+                {random:uniform(NEntries), Entry}
+        end, lists:seq(1, NEntries)))),
+        file:close(DB1),
+
+        {ok, DB2} = file:open("test_data/orderdata2", [raw, append]),
+        lists:foreach(fun(Entry) ->
+                ok = ringo_writer:write_entry(DB2, Entry)
+        end, Entries),
+        file:close(DB2),
+        
+        {LeafHashes1, _} = ringo_sync:make_leaf_hashes_and_ids(
+                "test_data/orderdata1"),
+        [[Root1]|_] = ringo_sync:build_merkle_tree(LeafHashes1),
+        
+        {LeafHashes2, _} = ringo_sync:make_leaf_hashes_and_ids(
+                "test_data/orderdata2"),
+        [[Root2]|_] = ringo_sync:build_merkle_tree(LeafHashes2),
+
+        io:fwrite("Root1: ~b Root2: ~b~n", [Root1, Root2]),
+        if Root1 == Root2 ->
+                io:fwrite("Roots match although entries were written "
+                          "in different order. Good!~n");
+        true ->
+                io:fwrite("Roots differ although entries are equal. Bad!~n")
         end,
         halt().
 

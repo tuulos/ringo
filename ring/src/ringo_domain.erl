@@ -649,6 +649,7 @@ resync(This, replica) ->
         if DiffLeaves == [] -> ok;
         true ->
                 SyncIDs = ringo_sync:collect_leaves(DiffLeaves, DBName),
+                error_logger:info_report({"syncids", SyncIDs}),
                 gen_server:cast(OPid, {sync_pack, This, SyncIDs, Distance}),
                 gen_server:cast(OPid, {sync_external, Host ++ ":" ++ Home})
         end,
@@ -683,26 +684,24 @@ update_sync_tree(This, DBName) ->
         Entries = lists:filter(fun({SyncID, _, _}) ->
                 not ringo_sync:in_leaves(LeafIDs, SyncID)
         end, Inbox),
-        Z = zlib:open(),
-        {LeafHashesX, LeafIDsX} = flush_sync_inbox(This, Z, Entries,
+        {LeafHashesX, LeafIDsX} = flush_sync_inbox(This, Entries,
                 LeafHashes, LeafIDs),
-        zlib:close(Z),
         Tree = ringo_sync:build_merkle_tree(LeafHashesX),
         ets:delete(LeafHashesX),
         {Tree, LeafIDsX}.
 
 % flush_sync_inbox writes entries that have been sent to this replica
 % (or owner) to disk and updates the leaf hashes accordingly
-flush_sync_inbox(_, _, [], LeafHashes, LeafIDs) ->
+flush_sync_inbox(_, [], LeafHashes, LeafIDs) ->
         error_logger:info_report({"flush inbox (empty)"}),
         {LeafHashes, LeafIDs};
 
-flush_sync_inbox(This, Z, [{SyncID, Entry, From}|Rest], LeafHashes, LeafIDs) ->
+flush_sync_inbox(This, [{SyncID, Entry, From}|Rest], LeafHashes, LeafIDs) ->
         error_logger:info_report({"flush inbox"}),
-        ringo_sync:update_leaf_hashes(Z, LeafHashes, SyncID),
+        ringo_sync:update_leaf_hashes(LeafHashes, SyncID),
         LeafIDsX = ringo_sync:update_leaf_ids(LeafIDs, SyncID),
         gen_server:cast(This, {write_entry, Entry, From}),
-        flush_sync_inbox(This, Z, Rest, LeafHashes, LeafIDsX).
+        flush_sync_inbox(This, Rest, LeafHashes, LeafIDsX).
 
 % flush_sync_outbox sends entries that exists on this replica or owner to
 % another node that requested the entry

@@ -56,6 +56,8 @@ echo "*** ID-list test ***"
 run test_sync idlist_test
 echo "*** Diff test ***"
 run test_sync diff_test 1000
+echo "*** Order test ***"
+run test_sync order_test 1000
 fi
 
 

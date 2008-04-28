@@ -2,7 +2,7 @@
 
 -export([make_leaf_hashes_and_ids/1, make_leaf_hashes/1,
          make_leaf_hashes/3, build_merkle_tree/1,
-         sync_id/2, sync_id_slot/1, update_leaf_ids/2, update_leaf_hashes/3,
+         sync_id/2, sync_id_slot/1, update_leaf_ids/2, update_leaf_hashes/2,
          collect_leaves/2, in_leaves/2, diff_parents/3, count_entries/1,
          pick_children/3]).
 
@@ -45,20 +45,18 @@ make_leaf_hashes(DBName) ->
         LeafHashes.
 
 make_leaf_hashes(DBName, F, Acc0) ->
-        Z = zlib:open(),
         LeafHashes = ets:new(leaves, []),
         % create the leaves
         ets:insert(LeafHashes,
                 [{I, 0} || I <- lists:seq(0, ?NUM_MERKLE_LEAVES - 1)]),
         AccF = ringo_reader:fold(fun(_, _, _, {Time, EntryID}, _, Acc) ->
                 {Leaf, SyncID} = sync_id(EntryID, Time),
-                update_leaf_hashes(Z, LeafHashes, SyncID),
+                update_leaf_hashes(LeafHashes, SyncID),
                 if is_function(F) ->
                         F(Leaf, SyncID, Acc);
                 true -> ok
                 end
         end, Acc0, DBName),
-        zlib:close(Z),
         {LeafHashes, AccF}.
 
 count_entries(LeafIDs) ->
@@ -73,11 +71,20 @@ build_merkle_tree(LeafHashes) ->
         zlib:close(Z),
         Tree.
 
-update_leaf_hashes(Z, LeafHashes, SyncID) ->
+% update_leaf_hashes must implement a commutative (accumulated)
+% hashing function. It should be reasonably collision-free. However,
+% we can survive a modest number of collisions, since once a leaf gets
+% more IDs, its hash changes, and the probability of many consequent
+% collisions for the same leaf is hopefully small.
+%
+% Furthermore, by using only the EntryID part of SyncID for hashing,
+% input values are likely to be uniformly distributed, as EntryID is
+% defined as follows: EntryID = random:uniform(4294967295).
+
+update_leaf_hashes(LeafHashes, <<_Time:32, EntryID:32>> = SyncID) ->
         Leaf = sync_id_slot(SyncID),
         [{_, P}] = ets:lookup(LeafHashes, Leaf),
-        X = zlib:crc32(Z, P, SyncID),
-        ets:insert(LeafHashes, {Leaf, X}).
+        ets:insert(LeafHashes, {Leaf, P bxor EntryID}).
 
 update_leaf_ids(LeafIDs, SyncID) ->
         Leaf = sync_id_slot(SyncID),
