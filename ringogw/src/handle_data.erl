@@ -68,6 +68,11 @@ op1([Domain, Key], Params, Value) ->
                 {ok, {Node, EntryID}} ->
                         {ok, {ok, <<"put ok">>, Node,
                                 formatid(DomainID), formatid(EntryID)}};
+                {error, invalid_domain} ->
+                        {ok, {error, <<"Domain doesn't exist">>}};
+                {error, domain_full} ->
+                        % CHUNK FIX: Try next chunk
+                        {ok, {error, <<"Domain full">>}};
                 Error ->
                         error_logger:warning_report(
                                 {"Unknown put reply", Error}),

@@ -30,7 +30,13 @@ def request(url, data = None, verbose = False, keep_alive = False):
                 curl.setopt(curl.HTTPHEADER, ["Expect:"])
         buf = cStringIO.StringIO()
         curl.setopt(curl.WRITEFUNCTION, buf.write)
-        curl.perform()
+        try:
+                curl.perform()
+        except pycurl.error, x:
+                if verbose:
+                        print "Pycurl.error:", x
+                return x
+
         b = buf.getvalue()
         # FIXME: Add automatic re-requesting if return code is
         # "request timeout"
@@ -41,7 +47,7 @@ def request(url, data = None, verbose = False, keep_alive = False):
         
         if not keep_alive:
                 curl = None
-        
+ 
         return code, cjson.decode(b)
 
         

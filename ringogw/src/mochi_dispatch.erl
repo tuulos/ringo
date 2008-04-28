@@ -17,9 +17,9 @@ request(Req) ->
                 [Dyn, N, Script|R] -> serve_dynamic(Req, N, [Script|R]);
                 [] -> Req:serve_file("", Doc);
                 E -> Req:serve_file(lists:last(E), Doc)
-        end,
-        error_logger:info_report({"Request processed in ", 
-                                round(timer:now_diff(now(), T))}).
+        end.
+        %error_logger:info_report({"Request processed in ", 
+        %                        round(timer:now_diff(now(), T))}).
 
 serve_dynamic(Req, N, Script) ->
         Mod = list_to_existing_atom("handle_" ++ N),

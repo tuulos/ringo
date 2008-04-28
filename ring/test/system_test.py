@@ -30,7 +30,6 @@ def check_reply(reply):
         return reply[1][2:]
 
 def check_entries(r, nrepl, nentries):
-        #print "R", r
         if r[0] != 200:
                 return False
         if len(r[1][3]) != nrepl:
@@ -92,7 +91,6 @@ def _wait_until(req, check, timeout):
                         print
                         return True
                 sys.stdout.write(".")
-        print "Timeout"
         print
         return False
 
@@ -130,17 +128,19 @@ def test04_ring_randomkill():
                 return True
         return False
 
-def _test_repl(name, n, nrepl, nitems, create_ring = True):
-        if create_ring and not _test_ring(n):
-                return False
-        node, domainid = check_reply(ringogw.request(
-                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
-        print "Create domain", domainid
+def _put_entries(name, nitems):
         t = time.time()
         for i in range(nitems):
                 check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
                         "testitem-%d" % i))
         print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
+
+def _test_repl(name, n, nrepl, nitems, create_ring = True):
+        if create_ring and not _test_ring(n):
+                return False
+        node, domainid = check_reply(ringogw.request(
+                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
+        _put_entries(name, nitems)
         return _wait_until("/mon/domains/domain?id=0x" + domainid,
                 lambda x: check_entries(x, n, nitems), 50)
 
@@ -187,25 +187,30 @@ def test07_addreplica(first_owner = True):
         if not _wait_until("/mon/ring/nodes", check2, 30):
                 print "Ring didn't converge"
                 return False
+       
+        _put_entries(name, 50)
+
+
+        print "Waiting for resync (timeout 300s, be patient):"
+        if not _wait_until("/mon/domains/domain?id=0x" + did,
+                lambda x: check_entries(x, 2, 100), 300):
+                print "Resync didn't finish in time"
+                return False
         
         re = ringogw.request("/mon/domains/domain?id=0x" + did)
-        print "RE", re 
         repl = re[1][3]
-
+        
         if real_owner in [r['node'] for r in repl if r['owner']][0]:
                 print "Owner matches"
+                return True
         else:
                 print "Invalid owner for domain %s (should be %s), got: %s" %\
                         (did, owner_id, repl)
                 return False
-        
 
-        print "Waiting for resync (timeout 180s, be patient):"
-        return _wait_until("/mon/domains/domain?id=0x" + did,
-                lambda x: check_entries(x, 2, 51), 180)
 
 def test08_addowner():
-        test07_addreplica(False)
+        return test07_addreplica(False)
 
         
 # X 1. (1 domain) create, put -> check that succeeds, number of entries
@@ -218,7 +223,9 @@ def test08_addowner():
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end
 # - same with large, external entries
-        
+# - testcase that simulates code update: crash nodes one by one in sequence,
+#   should cause minimal / none downtime
+
 ringogw.sethost(sys.argv[1])
 for f in sorted([f for f in globals().keys() if f.startswith("test")]):
         prefix, testname = f.split("_", 1)

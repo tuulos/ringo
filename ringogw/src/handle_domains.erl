@@ -21,7 +21,6 @@ op1("domain", [{"name", NameS}|_]) ->
                 ets:lookup(infopack_cache, {name, Name})]};
 
 op1("domain", [{"id", [$0, $x|IdS]}|_]) ->
-        error_logger:warning_report({"ID", IdS}),
         op("domain", [{"id", integer_to_list(
                 erlang:list_to_integer(IdS, 16))}]);
 

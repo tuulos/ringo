@@ -69,12 +69,12 @@
         terminate/2, code_change/3]).
 
 -include("ringo_store.hrl").
+-include("ringo_node.hrl").
 -include_lib("kernel/include/file.hrl").
 
 -define(DOMAIN_CHUNK_MAX, 104857600). % 100MB
 -define(SYNC_BUF_MAX_WORDS, 1000000).
 
--define(MAX_RING_SIZE, 1000000).
 -define(RESYNC_INTERVAL, 30000). % make this longer!
 -define(GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
 -define(STATS_WINDOW_LEN, 5).
@@ -183,10 +183,6 @@ handle_call(get_domaininfo, _From, #domain{info = Info} = D) ->
 handle_call(get_current_state, _From, D) ->
         {reply, D, D}.
 
-%handle_call({update_sync_data, Tree, _}, _, D) ->
-%        error_logger:info_report({"Update sync data"}),
-%        {reply, ok, D#domain{sync_tree = Tree, sync_ids = none}}.
-
 %%%
 %%% Basic domain operations: Create, put, get 
 %%%
@@ -208,36 +204,94 @@ handle_cast({new_domain, Name, Chunk, From, Params},
                         {noreply, NewD}
         end;
 
-% DB not open
-handle_cast({put, _, _, _, _From} = R, #domain{db = none,
-        owner = true, full = false} = D) ->
-
-        %From ! {error, invalid_domain},
-        % push request backwards
-        invalid_domain(R),
+% DB not open: There may be two reasons for this:
+%
+% 1) Domain doesn't exists
+% 2) Domain owner has changed recently 
+%
+% In the former case, put operation should fail. In the latter case, however,
+% the operation should succeed. Since this instance doesn't have enough
+% information to distinguish between 1 and 2, we must pass this request forward
+% in the ring (redir_put). 
+%
+% In the first case the request will eventually come back to this node and
+% it will be dropped. In the second case the request will be processed by the
+% previous owner, or a replica, of this domain, which will eventually
+% synchronize the entry back to this node.
+handle_cast({put, _, _, _, _} = P, #domain{db = none,
+        id = DomainID, owner = true} = D) ->
+        
+        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                {redir_put, node(), 1, P}}),
         {noreply, D};
 
-handle_cast({put, Key, Value, Flags, From}, #domain{size = Size,
-        owner = true, full = false, id = DomainID} = D) ->
+% normal case
+handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
+        full = false, id = DomainID, info = InfoPack} = D) ->
 
         EntryID = random:uniform(4294967295),
         Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
         From ! {ringo_reply, DomainID, {ok, {node(), EntryID}}},
-        case replicate(D, EntryID, Entry) of
-                chunk_full -> chunk_full(D),
-                        {noreply, D#domain{full = true}};
-                _ -> {noreply, D#domain{size = Size +
-                        ringo_writer:entry_size(Entry)}}
-        end;
+        
+        NewD = do_write(Entry, D),
 
-handle_cast({put, _, _, _, _}, #domain{full = true} = D) ->
-        % redirect to the next chunk
+        Nrepl = proplists:get_value(nrepl, InfoPack),
+        DServer = self(),
+        spawn(fun() -> replicate_proc(
+                {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
+        end),
+        {noreply, NewD};
+
+% chunk full
+handle_cast({put, _, _, _, From},
+        #domain{id = DomainID, owner = true, full = true} = D) ->
+
+        From ! {ringo_reply, DomainID, {error, domain_full}}, 
         {noreply, D};
 
 %%%
-%%% Maintenance
+%%% Redirected put
 %%%
 
+% Prevent infinite loops
+handle_cast({redir_put, _, N, _}, D) when N > ?MAX_RING_SIZE ->
+        {noreply, D};
+
+% Request came back to the owner -> domain doesn't exist
+handle_cast({redir_put, Owner, _, {put, _, _, _, From}},
+        #domain{id = DomainID} = D) when Owner == node() ->
+
+        From ! {ringo_reply, DomainID, {error, invalid_domain}},
+        {noreply, D};
+
+% no domain on this node, forward
+handle_cast({redir_put, Owner, N, P}, #domain{db = none, id = DomainID} = D) ->
+        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, 
+                {redir_put, Owner, N + 1, P}}),
+        {noreply, D};
+
+% put here, if the domain isn't full
+handle_cast({redir_put, Owner, _, {put, Key, Value, Flags, From}},
+        #domain{id = DomainID, full = false} = D) ->
+        
+        EntryID = random:uniform(4294967295),
+        Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
+        From ! {ringo_reply, DomainID, {ok, {Owner, EntryID}}},
+        {noreply, do_write(Entry, D)};
+
+% domain full, notify the sender
+handle_cast({redir_put, _, _, {put, _, _, _, From}},
+        #domain{id = DomainID, full = true} = D) ->
+        
+        From ! {ringo_reply, DomainID, {error, domain_full}},
+        {noreply, D};
+
+
+%%% 
+%%% Replication
+%%%
 
 % back to the owner
 handle_cast({repl_put, EntryID, _, {_, ONode, OPid}, _, _}, D)
@@ -278,9 +332,8 @@ handle_cast({repl_put, EntryID, Entry, {_, _, OPid} = Owner, ODomain, N},
 handle_cast({write_entry, _, From} = Req, #domain{db = none} = D) ->
         open_or_clone(Req, From, D);
 
-handle_cast({write_entry, Entry, _}, #domain{db = DB, size = Size} = D) ->
-        do_write(DB, Entry, Size, oldentry),
-        {noreply, D#domain{size = Size + ringo_writer:entry_size(Entry)}};
+handle_cast({write_entry, Entry, _}, D) ->
+        {noreply, do_write(Entry, D)};
 
 handle_cast({update_sync_data, Tree, LeafIDs}, #domain{owner = true} = D) ->
         {noreply, D#domain{sync_tree = Tree, sync_ids = LeafIDs}};
@@ -336,12 +389,16 @@ handle_cast({sync_pack, From, Pack, Distance}, #domain{info = InfoPack,
                 RequestFrom ++ RequestList
         end, [], Pack),
 
+        % If this is the first resync for an uninitialized owner, InfoPack
+        % is not initialized yet.
+        Nrepl = if InfoPack == undefined -> false;
+                true -> proplists:get_value(nrepl, InfoPack)
+                end,
+        
         % NB: A small(?) performance issue: We may request the same IDs from
         % many, possible all, replicas. This is of course unnecessary. Since
         % duplicates will be removed in flush_sync_inbox, current code works
         % correctly.
-
-        Nrepl = proplists:get_value(nrepl, InfoPack),
         if Requests == [], Distance > Nrepl ->
                 gen_server:cast(From, {kill_domain, "Distant domain"});
         Requests == [] -> ok;
@@ -357,9 +414,8 @@ handle_cast({find_owner, Node, N}, #domain{id = DomainID, owner = true} = D) ->
         {noreply, D};
 
 % N < MAX_RING_SIZE prevents theoretical infinite loops
-handle_cast({find_owner, Node, N},
-        #domain{owner = false, id = DomainID, db = DB} = D)
-        when N < ?MAX_RING_SIZE ->
+handle_cast({find_owner, Node, N}, #domain{owner = false, 
+        id = DomainID, db = DB} = D) when N < ?MAX_RING_SIZE ->
 
         {ok, _, Next} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Next},
@@ -451,25 +507,6 @@ domain_size(Home) ->
         [Size, _] = string:tokens(os:cmd(["du -b ", Home, " |tail -1"]), "\t"),
         list_to_integer(Size).
 
-close_domain(Home, DB) ->
-        ok = file:sync(DB),
-        %DFile = file:join(Home, "data"),
-        %ok = file:write_file_info(DFile, #file_info{mode = ?RDONLY}),
-        CFile = filename:join(Home, "closed"),
-        ok = file:write_file(CFile, <<>>), 
-        ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).
-
-invalid_domain(_Request) ->
-        error_logger:info_report({"Invalid domain"}),
-        % push backwards
-        no_fun.
-
-%closed_chunk(_Request) -> no_fun.
-        % forward to the next chunk
-
-chunk_full(#domain{home = Home, db = DB}) ->
-        close_domain(Home, DB).
-        % create a new domain chunk
 
 %
 % opportunistic replication: If at least one replica succeeds, we are happy
@@ -480,17 +517,16 @@ chunk_full(#domain{home = Home, db = DB}) ->
 %%% Put with replication
 %%%
 
-replicate(#domain{db = DB, size = Size, id = DomainID, info = InfoPack},
-        EntryID, Entry) ->
-
-        Nrepl = proplists:get_value(nrepl, InfoPack),
-        DServer = self(),
-        case do_write(DB, Entry, Size, new_entry) of
-                chunk_full -> chunk_full;
-                _ -> spawn(fun() -> replicate_proc(
-                        {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
-                        end)
-        end.
+%replicate(#domain{db = DB, size = Size, id = DomainID, info = InfoPack},
+%        EntryID, Entry) ->
+%
+%        Nrepl = proplists:get_value(nrepl, InfoPack),
+%        DServer = self(),
+%        case do_write(DB, Entry, Size, new_entry) of
+%                chunk_full -> chunk_full;
+%                _ -> 
+%                
+%        end.
 
 replicate_proc(_, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
@@ -509,7 +545,7 @@ replicate_proc({DServer, DomainID, EntryID, Entry, Nrepl} = R, Tries) ->
         receive_repl_replies(R, Tries, Nrepl).
 
 receive_repl_replies(_, _, 0) -> ok;
-receive_repl_replies({_, _, EntryID, _} = R, Tries, N) ->
+receive_repl_replies({_, _, EntryID, _, _} = R, Tries, N) ->
         receive
                 {repl_reply, {ring_too_small, EntryID}} ->
                         ok;
@@ -527,22 +563,36 @@ open_or_clone(Req, From, D) ->
                      handle_cast(Req, NewD)
         end.
 
-do_write(_, Entry, CurrentSize, new_entry)
-        when size(Entry) + CurrentSize > ?DOMAIN_CHUNK_MAX ->
-                chunk_full;
-
 % should we prevent replica or sync entries to be added if the resulting
 % chunk would exceed the maximum size? If yes, spontaneously corrupted entries
 % can't be fixed. If no, a chunk may grow infinitely large. In this case, it is
 % possible that a nasty bug causes a large amounts of sync entries to be sent
 % which would eventually fill the disk.
 
-%do_write(_, Entry, CurrentSize, _)
-%        when size(Entry) + CurrentSize > ?DOMAIN_CHUNK_MAX * 1.2 ->
-%                chunk_full;
 
-do_write(DB, Entry, _CurrentSize, _) ->
-        ringo_writer:write_entry(DB, Entry).
+% We trust that any function that calls do_write has checked fullness of the
+% domain already. If the domain is full and do_write() is called anyway, we 
+% believe that the caller has a good reason for that and perform write normally.
+do_write(Entry, #domain{db = DB, full = true} = D) ->
+        ringo_writer:write_entry(DB, Entry),
+        D;
+
+do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
+        ringo_writer:write_entry(DB, Entry),
+        S = size(Entry) + Size,
+        if S > ?DOMAIN_CHUNK_MAX ->
+                close_domain(Home, DB),
+                D#domain{size = S, full = true};
+        true ->
+                D#domain{size = S, full = false}
+        end.   
+
+close_domain(Home, DB) ->
+        ok = file:sync(DB),
+        CFile = filename:join(Home, "closed"),
+        ok = file:write_file(CFile, <<>>), 
+        ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).
+
 
 % Premises about resync:
 %
