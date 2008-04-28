@@ -34,9 +34,12 @@
 -module(ringo_node).
 -behaviour(gen_server).
 
--export([start_link/2, check_ring_route/0, check_parallel_rings/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
         terminate/2, code_change/3]).
+
+-export([start_link/2, check_ring_route/0, check_parallel_rings/0,
+         publish_ring_route/2, record_ring_route/1, okfun/0,
+         kill_parallel_ring/2]).
 
 -include("ringo_node.hrl").
 
@@ -314,6 +317,12 @@ op(new_node, _Args, From, ReqID,
 %%%
 %%% Circulate is used by record_ring_route and publish_ring_route.
 
+% Error case: Ring list is larger that MAX_RING_SIZE, which means that we're
+% probably in an infinite loop.
+op(circulate, {Ring, _, _}, _From, _ReqID, _)
+        when length(Ring) > ?MAX_RING_SIZE ->
+        error_logger:warning_report({"Circulate: Infinite loop detected!"});
+
 % Recording done: Back where we started. Validate the list and call the
 % finalizer.
 op(circulate, {Ring, _NodeOp, EndOp}, From, _ReqID, RNode)
@@ -322,7 +331,7 @@ op(circulate, {Ring, _NodeOp, EndOp}, From, _ReqID, RNode)
         RogueNodes = ringo_util:validate_ring(RRing),
         gen_server:abcast(RogueNodes, ringo_node,
                 {kill_node, "Node is misplaced"}),
-        ok = EndOp(RRing, RNode);
+        ok = run_opfun(EndOp, [RRing, RNode]);
 
 % Normal case: Previous item in the ring list equals to this node's 
 % predecessor.
@@ -346,7 +355,7 @@ op(circulate, {[{PrevID, Prev}|_], _, _}, _From, 0,
 op(circulate, {Ring, NodeOp, EndOp}, From, 1,
         #rnode{myid = MyID, nextnode = Next} = R) ->
 
-        case catch NodeOp(Ring, R) of
+        case catch run_opfun(NodeOp, [Ring, R]) of
                 ok -> ok;
                 Error -> error_logger:warning_report(
                         {"Circulate: NodeOp failed", Error}),
@@ -375,6 +384,19 @@ op(join_existing_ring, _, _, _, #rnode{myid = MyID, route = Route}) ->
         Candidates = ringo_util:ringo_nodes() -- [node()],
         join_existing_ring(MyID, Candidates, Route).
 
+%%% Opfun mechanism is an alternative mechanism to remote fun expressions, that
+%%% don't play well with code changes. An opfun gets executed normally even if
+%%% the target machine code differs from the sender, as long as the function 
+%%% signatures match in apply.
+
+run_opfun({Mod, Fun, PArgs}, [A1, A2]) ->
+        Args = lists:map(fun
+                ('$1') -> A1;
+                ('$2') -> A2;
+                (X) -> X
+        end, PArgs),
+        apply(Mod, Fun, Args).
+        
 
 %%% Record_ring_route circulates through the ring, records the nodes
 %%% seen, and when retuned to the starting node, initiates publish_ring_route.
@@ -382,17 +404,18 @@ op(join_existing_ring, _, _, _, #rnode{myid = MyID, route = Route}) ->
 %%% recorded ring route list on each node.
 
 record_ring_route(RNode) ->
-        NodeOp = fun(_, _) -> ok end,
-        EndOp = fun(EndRing, EndRNode) -> 
-                publish_ring_route(EndRing, EndRNode) end,
+        NodeOp = {?MODULE, okfun, []},
+        EndOp = {?MODULE, publish_ring_route, ['$1', '$2']},
         op(circulate, {[], NodeOp, EndOp}, node(), 1, RNode).
 
 publish_ring_route(Ring, RNode) ->
-        NodeOp = fun(_, _) ->
-                gen_server:call(ringo_node, {update_ring_route, Ring}) end,
-        EndOp = fun(_, _) -> ok end,
+        NodeOp = {gen_server, call,
+                [ringo_node, {update_ring_route, Ring}, 1000]},
+        EndOp = {?MODULE, okfun, []},
         op(circulate, {[], NodeOp, EndOp}, node(), 1, RNode). 
-                
+
+okfun() -> ok.
+
 %%% Logic in starting a node is as follows: We would like to connect to
 %%% the Single Right Ring (SRR) right away, that is, to the ring that
 %%% includes the globally smallest node ID (see check_parallel_rings()
@@ -514,7 +537,6 @@ check_ring_route() ->
 check_parallel_rings() ->
         {ok, {_, R}} = gen_server:call(ringo_node, get_ring_route),
         {_, Ring} = lists:unzip(R),
-        %error_logger:warning_report({"Ring", Ring, "Other", ringo_util:ringo_nodes()}),
 
         Nodes = ringo_util:ringo_nodes(),
         Aliens = Nodes -- Ring,
@@ -523,13 +545,10 @@ check_parallel_rings() ->
         if length(Ring) > 0, length(Aliens) > 0 ->
                 error_logger:warning_report({"Aliens detected:", Aliens}),
                 Alien = lists:nth(random:uniform(length(Aliens)), Aliens),
-                Node = node(),
-                NodeOp = fun(_, _) -> ok end,
-                EndOp = fun(EndRing, _) ->
-                                {ok, {_, OtherRing}} = gen_server:call(
-                                        {ringo_node, Node}, get_ring_route),
-                                kill_parallel_ring(EndRing, OtherRing)
-                        end,
+                
+                NodeOp = {?MODULE, okfun, []},
+                EndOp = {?MODULE, kill_parallel_ring, ['$1', R]},
+
                 gen_server:call({ringo_node, Alien},
                         {op, circulate, {[], NodeOp, EndOp}, Alien, 1});
 
