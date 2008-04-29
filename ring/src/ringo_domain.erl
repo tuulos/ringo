@@ -311,7 +311,7 @@ handle_cast({redir_put, _, _, {put, _, _, _, From}},
 %%%
 
 % back to the owner
-handle_cast({repl_put, EntryID, _, {_, ONode, OPid}, _, _}, D)
+handle_cast({repl_put, _EntryID, _, {_, ONode, _OPid}, _, _}, D)
         when ONode == node() ->
         
         %OPid ! {repl_reply, {ring_too_small, EntryID}},
@@ -328,7 +328,7 @@ handle_cast({repl_put, _, _, _, ODomain, _} = R, #domain{db = none} = D) ->
         open_or_clone(R, ODomain, D);
 
 % normal case
-handle_cast({repl_put, EntryID, Entry, {_, _, OPid} = Owner, ODomain, N},
+handle_cast({repl_put, EntryID, Entry, {_, _, _OPid} = Owner, ODomain, N},
         #domain{db = DB, id = DomainID, prevnode = Prev} = D) ->
 
         error_logger:info_report({"repl put", EntryID}),
@@ -548,7 +548,7 @@ replicate(_, _, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
         failed;
 
-replicate({DServer, DomainID, EntryID, Entry, Nrepl} = R, Prev, Tries) ->
+replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Prev, _Tries) ->
         % XXX: This is the correct line:
         %Me = {net_adm:localhost(), node(), self()},
         % XXX: This is for debugging:
@@ -644,7 +644,6 @@ close_domain(Home, DB) ->
 
 % Owner-end in synchronization -- just update the tree
 resync(This, owner) ->
-        register(resync, self()),
         error_logger:info_report({"resync owner"}),
         #domain{dbname = DBName, db = DB, owner = true, stats = Stats} = 
                 gen_server:call(This, get_current_state),
@@ -660,7 +659,6 @@ resync(This, owner) ->
 
 % Replica-end in synchronization -- the active party
 resync(This, replica) ->
-        register(resync, self()),
         error_logger:info_report({"resync replica"}),
         #domain{dbname = DBName, db = DB, id = DomainID, owner = false,
                 stats = Stats, host = Host, home = Home} 
