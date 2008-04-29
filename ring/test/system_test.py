@@ -25,7 +25,10 @@ def kill_node(id):
         subprocess.call(["pkill", "-f", id])
 
 def domain_id(name, chunk):
-        return md5.md5("%d %s" % (chunk, name)).hexdigest()
+        return md5.md5("%d %s" % (chunk, name)).hexdigest().upper()
+
+def make_domain_id(did):
+        return hex(did)[2:-1]
 
 def check_reply(reply):
         if reply[0] != 200 or reply[1][0] != 'ok':
@@ -70,17 +73,23 @@ def _check_results(reply, num):
         l = len([node for node in nodes if node['ok']])
         return len(nodes) == l == num
 
-def _test_ring(n, num = None):
+def _test_ring(n, num = None, nodeids = []):
         if num == None:
                 check = lambda x: _check_results(x, n)
         else:
                 check = lambda x: _check_results(x, num)
 
-        print "Launching nodes",
+        if nodeids:
+                n = len(nodeids)
+
+        print "Launching nodes"
         res = []
         for i in range(n):
                 time.sleep(1)
-                res.append(new_node())
+                if nodeids:
+                        res.append(new_node(nodeids[i]))
+                else:
+                        res.append(new_node())
                 sys.stdout.write(".")
         print
         t = time.time()
@@ -101,12 +110,31 @@ def _wait_until(req, check, timeout):
         print
         return False
 
+def _put_entries(name, nitems, retries = 0):
+        t = time.time()
+        for i in range(nitems):
+                check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
+                        "testitem-%d" % i, retries = retries))
+        print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
+
+def _test_repl(name, n, nrepl, nitems, create_ring = True):
+        if create_ring and not _test_ring(n):
+                return False
+        node, domainid = check_reply(ringogw.request(
+                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
+        _put_entries(name, nitems)
+        return _wait_until("/mon/domains/domain?id=0x" + domainid,
+                lambda x: check_entries(x, n, nitems), 50)
+
+# make a ring, check that converges
 def test01_ring10():
         return _test_ring(10)
 
+# make a large ring, check that converges
 def test02_ring100():
         return _test_ring(100)
 
+# make a ring in two phases, check that converges
 def test03_ring_newnodes():
         print "Launching first batch of nodes"
         if not _test_ring(10):
@@ -115,6 +143,7 @@ def test03_ring_newnodes():
         print "Launching second batch of nodes"
         return _test_ring(10, 20)
 
+# make a ring, kill random nodes, check that heals
 def test04_ring_randomkill():
         res = []
         print "Launching nodes",
@@ -135,28 +164,16 @@ def test04_ring_randomkill():
                 return True
         return False
 
-def _put_entries(name, nitems, retries = 0):
-        t = time.time()
-        for i in range(nitems):
-                check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
-                        "testitem-%d" % i, retries = retries))
-        print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
 
-def _test_repl(name, n, nrepl, nitems, create_ring = True):
-        if create_ring and not _test_ring(n):
-                return False
-        node, domainid = check_reply(ringogw.request(
-                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
-        _put_entries(name, nitems)
-        return _wait_until("/mon/domains/domain?id=0x" + domainid,
-                lambda x: check_entries(x, n, nitems), 50)
-
+# create, put, check that succeeds
 def test05_replication1():
         return _test_repl("test_replication1", 1, 1, 100)
 
+# create, put, check that succeeds, replicates
 def test06_replication50():
         return _test_repl("test_replication50", 50, 50, 100)
 
+# create, put, add new node (replica), check that resyncs ok
 def test07_addreplica(first_owner = True):
         if first_owner:
                 name = "addreplicas_test"
@@ -166,9 +183,9 @@ def test07_addreplica(first_owner = True):
         check2 = lambda x: _check_results(x, 2)
         did = domain_id(name, 0)
         # a node id that is guaranteed to become owner for the domain
-        owner_id = real_owner = hex(int(did, 16) - 1)[2:-1]
+        owner_id = real_owner = make_domain_id(int(did, 16) - 1)
         # a node id that is guaranteed to become replica for the domain
-        repl_id = hex(int(did, 16) + 1)[2:-1]
+        repl_id = make_domain_id(int(did, 16) + 1)
         
         if not first_owner:
                 tmp = repl_id
@@ -214,10 +231,14 @@ def test07_addreplica(first_owner = True):
                         (did, owner_id, repl)
                 return False
 
-
+# create, put, add new node (owner), check that resyncs ok and owner is
+# transferred correctly
 def test08_addowner():
         return test07_addreplica(False)
 
+
+# create, put, kill owner, put, reincarnate owner, check that succeeds 
+# and resyncs 
 def test09_killowner():
         if not _test_ring(10):
                 return False
@@ -251,14 +272,59 @@ def test09_killowner():
                 print "Resync didn't finish in time"
                 return False
 
+# create owner and a replica that has a distant id. Put items. Kill owner,
+# add items to the distant node. Reincarnate owner and add new nodes between
+# the owner and the distant node. Check that resyncs ok. 
+#
+# NB: This test doesn't quite test what it should: Polling status from the 
+# distant node activates it, which causes resync to active as well. In a more
+# realistic case the owner would have to active the distant node by itself with
+# the global resync process.
+def test10_distantsync():
+        check1 = lambda x: _check_results(x, 1)
+        did = domain_id("distantsync", 0)
+
+        distant_id, p = new_node(make_domain_id(int(did, 16) - 20))
+        time.sleep(1)
+        owner_id, p = new_node(did)
+
+        print "Owner is", owner_id
+        print "Distant node is", distant_id
+        if not _wait_until("/mon/ring/nodes",
+                        lambda x: _check_results(x, 2), 30):
+                print "Ring didn't converge"
+                return False
+
+        print "Create and populate domain"
+        if not _test_repl("distantsync", 2, 3, 60, create_ring = False):
+                print "Couldn't create and populate the domain"
+                return False
+                
+        print "Kill owner", owner_id
+        kill_node(owner_id)
         
-# X 1. (1 domain) create, put -> check that succeeds, number of entries
-# X 2. (2 domains) create, put -> succeeds, replicates, #entries
-# X 3. (10 domains) create put -> succeeds, replicates, #entries
-# X 4. (1 domain) create, put, add new domain (replica), check that replicates
-# X 5. (1 domain) create, put, add new domain (new owner), check that owner moves
-# X       correctly and replicates
-# 6. (2 domains) create, put, kill owner, put, check that works
+        print "Put 30 entries:"
+        _put_entries("distantsync", 30, retries = 10)
+
+        print "Creating more node, reincarnating owner"
+        if not _test_ring(0, 40, [make_domain_id(int(did, 16) + i)
+                        for i in range(-19, 20)]):
+                return False
+        
+        print "Putting 10 entries to the new owner"
+        _put_entries("distantsync", 10)
+
+        print "Waiting for everything to resync"
+        if _wait_until("/mon/domains/domain?id=0x" + did,
+                        lambda x: check_entries(x, 5, 100), 300):
+                return True
+        else:
+                print "Resync didn't finish in time"
+                return False
+
+
+
+        
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end
 # - same with large, external entries

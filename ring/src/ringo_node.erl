@@ -143,6 +143,7 @@ handle_call({get_infopack, DomainID}, From, #rnode{home = Home} = R) ->
 handle_call({assign_node, NewPrev, NewPrevID, none, none}, _From,
         #rnode{myid = MyID, prevnode = OldPrev} = R) ->
         
+        kill_domains(),
         monitor_node(OldPrev, false),
         monitor_node(NewPrev, true),
         {reply, {ok, MyID}, R#rnode{previd = NewPrevID, prevnode = NewPrev}};
@@ -190,21 +191,22 @@ handle_cast({kill_node, Reason}, RNode) ->
         error_logger:warning_report({"Kill node requested", Reason}),
         {stop, normal, RNode};
 
-handle_cast({{domain, DomainID}, Msg}, #rnode{home = Home} = R) ->
+handle_cast({{domain, DomainID}, Msg},
+        #rnode{home = Home, prevnode = Prev, nextnode = Next} = R) ->
         Match = ringo_util:match(DomainID, R),
-        domain_dispatch(Home, DomainID, Match, Msg),
+        domain_dispatch(Home, DomainID, Match, Prev, Next, Msg),
         {noreply, R};
 
 % Length(Ring) > 0 check ensures that no operation is performed until the
 % node is a valid member of the ring.
-handle_cast({match, ReqID, Op, From, Args} = Req, 
-        #rnode{route = {_, Ring}, home = Home} = R) when Ring =/= [] ->
+handle_cast({match, ReqID, Op, From, Args} = Req, #rnode{route = {_, Ring},
+        prevnode = Prev, nextnode = Next, home = Home} = R) when Ring =/= [] ->
         
         Match = ringo_util:match(ReqID, R),
         error_logger:info_report({"Match", [Match, Op]}),
         if Match, Op == domain ->
                 error_logger:info_report({"Match: domain operation"}),
-                domain_dispatch(Home, ReqID, true, Args);
+                domain_dispatch(Home, ReqID, true, Prev, Next, Args);
         Match ->
                 error_logger:info_report({"Match: node operation"}),
                 spawn_link(fun() -> op(Op, Args, From, ReqID, R) end);
@@ -242,13 +244,14 @@ handle_info({nodedown, Node}, R) ->
 %%%
 %%%
 
-domain_dispatch(Home, DomainID, IsOwner, Msg) ->
+domain_dispatch(Home, DomainID, IsOwner, Prev, Next, Msg) ->
         error_logger:info_report({"Dispatch", DomainID, IsOwner, Msg}),
         {Alive, S} = domain_lookup(DomainID),
         if Alive -> 
                 Server = S;
         true ->
-                {ok, Server} = ringo_domain:start(Home, DomainID, IsOwner),
+                {ok, Server} = ringo_domain:start(Home, DomainID,
+                        IsOwner, Prev, Next),
                 ets:insert(domain_table, {DomainID, Server})
         end,
         gen_server:cast(Server, Msg).

@@ -64,7 +64,7 @@
 -module(ringo_domain).
 -behaviour(gen_server).
 
--export([start/3, resync/2, global_resync/1]).
+-export([start/5, resync/2, global_resync/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
         terminate/2, code_change/3]).
 
@@ -83,15 +83,15 @@
 -define(MAX_TRIES, 3).
 -define(REPL_TIMEOUT, 2000).
 
-start(Home, DomainID, IsOwner) ->
+start(Home, DomainID, IsOwner, Prev, Next) ->
         case gen_server:start(ringo_domain, 
                 %[Home, DomainID, IsOwner], [{debug, [trace, log]}]) of
-                [Home, DomainID, IsOwner], []) of
+                [Home, DomainID, IsOwner, Prev, Next], []) of
                 {ok, Server} -> {ok, Server};
                 {error, {already_started, Server}} -> {ok, Server}
         end.
 
-init([Home, DomainID, IsOwner]) ->
+init([Home, DomainID, IsOwner, Prev, Next]) ->
         error_logger:info_report({"Domain opens", DomainID, IsOwner}),
         {A1, A2, A3} = now(),
         random:seed(A1, A2, A3),
@@ -116,12 +116,18 @@ init([Home, DomainID, IsOwner]) ->
                      sync_ids = none,
                      sync_inbox = Inbox,
                      sync_outbox = Outbox,
-                     stats = Stats
+                     stats = Stats,
+                     prevnode = Prev,
+                     nextnode = Next
                 },
 
         Domain = case catch open_domain(D0) of
-                NewD when is_record(NewD, domain) -> NewD;
-                _ -> D0
+                NewD when is_record(NewD, domain) ->
+                        error_logger:info_report({"Existing domain opened"}),
+                        NewD;
+                Error ->
+                        error_logger:info_report({"No domain found", Error}),
+                        D0
         end,
         
         ets:insert(Stats, {started, ringo_util:format_timestamp(now())}),
@@ -219,16 +225,15 @@ handle_cast({new_domain, Name, Chunk, From, Params},
 % previous owner, or a replica, of this domain, which will eventually
 % synchronize the entry back to this node.
 handle_cast({put, _, _, _, _} = P, #domain{db = none,
-        id = DomainID, owner = true} = D) ->
+        id = DomainID, owner = true, prevnode = Prev} = D) ->
         
-        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                 {redir_put, node(), 1, P}}),
         {noreply, D};
 
 % normal case
 handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
-        full = false, id = DomainID, info = InfoPack} = D) ->
+        full = false, id = DomainID, info = InfoPack, prevnode = Prev} = D) ->
 
         EntryID = random:uniform(4294967295),
         Entry = ringo_writer:make_entry(D, EntryID, Key, Value, Flags),
@@ -238,9 +243,21 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
 
         Nrepl = proplists:get_value(nrepl, InfoPack),
         DServer = self(),
-        spawn(fun() -> replicate_proc(
-                {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
-        end),
+
+        % See replicate_proc for different replication policies. Currently
+        % performing replication in another process is unsafe, since it 
+        % de-serializes the order in which entries hit replicas, which in
+        % turn may confuse resyncing process (ringo_reader can only detect
+        % duplicate EntryIDs that are consequent).
+        
+        % Currently the safest approach,
+        % in resyncing point of view, is to do opportunistic replication (no
+        % re-sends) in a serialized manner (i.e. no spawning).
+        replicate({DServer, DomainID, EntryID, Entry, Nrepl}, Prev, 0),
+
+        %spawn(fun() -> replicate_proc(
+        %        {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
+        %end),
         {noreply, NewD};
 
 % chunk full
@@ -266,8 +283,8 @@ handle_cast({redir_put, Owner, _, {put, _, _, _, From}},
         {noreply, D};
 
 % no domain on this node, forward
-handle_cast({redir_put, Owner, N, P}, #domain{db = none, id = DomainID} = D) ->
-        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
+handle_cast({redir_put, Owner, N, P},
+        #domain{db = none, id = DomainID, prevnode = Prev} = D) ->
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, 
                 {redir_put, Owner, N + 1, P}}),
         {noreply, D};
@@ -297,14 +314,13 @@ handle_cast({redir_put, _, _, {put, _, _, _, From}},
 handle_cast({repl_put, EntryID, _, {_, ONode, OPid}, _, _}, D)
         when ONode == node() ->
         
-        OPid ! {repl_reply, ring_too_small, EntryID},
+        %OPid ! {repl_reply, {ring_too_small, EntryID}},
         {noreply, D};
 
 % replica on the same physical node as the owner, skip over this node
-handle_cast({repl_put, _, _, {OHost, _, _}, _, _} = R,
-        #domain{host = Host, id = DomainID} = D) when OHost == Host ->
+handle_cast({repl_put, _, _, {OHost, _, _}, _, _} = R, #domain{host = Host,
+        id = DomainID, prevnode = Prev} = D) when OHost == Host ->
         
-        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, R}),
         {noreply, D};
 
@@ -313,16 +329,20 @@ handle_cast({repl_put, _, _, _, ODomain, _} = R, #domain{db = none} = D) ->
 
 % normal case
 handle_cast({repl_put, EntryID, Entry, {_, _, OPid} = Owner, ODomain, N},
-        #domain{db = DB, id = DomainID} = D) ->
+        #domain{db = DB, id = DomainID, prevnode = Prev} = D) ->
 
+        error_logger:info_report({"repl put", EntryID}),
         if N > 1 ->
-                {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
                 gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                         {repl_put, EntryID, Entry, Owner, ODomain, N - 1}});
         true -> ok
         end,
+        % Notify the owner before or after writing? Put operation succeeds
+        % faster if the reply is sent before, but then any errors in writing
+        % will go unnoticed. On the other hand, write errors would probably
+        % repeat with re-sent replicas, so the benefit is not clear.
+        %OPid ! {repl_reply, {ok, EntryID}},
         ok = ringo_writer:write_entry(DB, Entry),
-        OPid ! {repl_reply, {ok, EntryID}},
         {noreply, D};
 
 %%%
@@ -367,7 +387,7 @@ handle_cast({sync_external, _DstDir}, D) ->
         error_logger:info_report("launch rsync etc"),
         {noreply, D};
 
-handle_cast({sync_pack, From, Pack, Distance}, #domain{info = InfoPack,
+handle_cast({sync_pack, From, Pack, _Distance}, #domain{info = _InfoPack,
         sync_ids = LeafIDs, sync_outbox = Outbox, owner = true} = D) ->
 
         Requests = lists:foldl(fun({Leaf, RSyncIDs}, RequestList) ->
@@ -389,19 +409,29 @@ handle_cast({sync_pack, From, Pack, Distance}, #domain{info = InfoPack,
                 RequestFrom ++ RequestList
         end, [], Pack),
 
+        % -- XXX ---
+        % Killing a distant replica: If an inactive domain will
+        % kill itself after a timeout, we don't have to kill a distant
+        % domain explicitely. Killing it might be a bit problematic anyway
+        % since we may not have InfoPack available when we get the only
+        % sync packet from it.
+
         % If this is the first resync for an uninitialized owner, InfoPack
         % is not initialized yet.
-        Nrepl = if InfoPack == undefined -> false;
-                true -> proplists:get_value(nrepl, InfoPack)
-                end,
-        
+        %Nrepl = if InfoPack == undefined -> false;
+        %        true -> proplists:get_value(nrepl, InfoPack)
+        %        end,
+        %error_logger:info_report({"Hep", Requests, Distance, Nrepl}),
+        %if Requests == [], Distance > Nrepl ->
+        %        error_logger:info_report({"NUF"}),
+        %        gen_server:cast(From, {kill_domain, "Distant domain"});
+        % --- XXX ---
+                
         % NB: A small(?) performance issue: We may request the same IDs from
         % many, possible all, replicas. This is of course unnecessary. Since
         % duplicates will be removed in flush_sync_inbox, current code works
         % correctly.
-        if Requests == [], Distance > Nrepl ->
-                gen_server:cast(From, {kill_domain, "Distant domain"});
-        Requests == [] -> ok;
+        if Requests == [] -> ok;
         true ->
                 gen_server:cast(From, {sync_get, self(), Requests})
         end,
@@ -414,10 +444,9 @@ handle_cast({find_owner, Node, N}, #domain{id = DomainID, owner = true} = D) ->
         {noreply, D};
 
 % N < MAX_RING_SIZE prevents theoretical infinite loops
-handle_cast({find_owner, Node, N}, #domain{owner = false, 
-        id = DomainID, db = DB} = D) when N < ?MAX_RING_SIZE ->
+handle_cast({find_owner, Node, N}, #domain{owner = false, id = DomainID,
+        db = DB, nextnode = Next} = D) when N < ?MAX_RING_SIZE ->
 
-        {ok, _, Next} = gen_server:call(ringo_node, get_neighbors),
         gen_server:cast({ringo_node, Next},
                 {{domain, DomainID}, {find_owner, Node, N + 1}}),
         
@@ -482,7 +511,9 @@ new_domain(#domain{home = Path} = D, Info) ->
 open_domain(#domain{home = Home} = D) ->
         case file:read_file_info(Home) of
                 {ok, _} -> open_db(D);
-                _ -> throw(invalid_domain)
+                Error ->
+                        error_logger:info_report({"DB open said", Home, Error}),
+                        throw(invalid_domain)
         end.
 
 open_db(#domain{home = Home, dbname = DBName} = D) ->
@@ -508,51 +539,52 @@ domain_size(Home) ->
         list_to_integer(Size).
 
 
-%
-% opportunistic replication: If at least one replica succeeds, we are happy
-% (and assume that quite likely more than one have succeeded)
-%
 
 %%%
 %%% Put with replication
 %%%
 
-%replicate(#domain{db = DB, size = Size, id = DomainID, info = InfoPack},
-%        EntryID, Entry) ->
-%
-%        Nrepl = proplists:get_value(nrepl, InfoPack),
-%        DServer = self(),
-%        case do_write(DB, Entry, Size, new_entry) of
-%                chunk_full -> chunk_full;
-%                _ -> 
-%                
-%        end.
-
-replicate_proc(_, ?MAX_TRIES) ->
+replicate(_, _, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
         failed;
 
-replicate_proc({DServer, DomainID, EntryID, Entry, Nrepl} = R, Tries) ->
+replicate({DServer, DomainID, EntryID, Entry, Nrepl} = R, Prev, Tries) ->
         % XXX: This is the correct line:
         %Me = {net_adm:localhost(), node(), self()},
         % XXX: This is for debugging:
         Me = {os:getenv("DBGHOST"), node(), self()},
+        if Prev == node() -> ok;
+        true ->
+                error_logger:info_report({"replicate semd", EntryID}),
+                gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                        {repl_put, EntryID, Entry, Me, DServer, Nrepl}})
+        
+                % For super-opportunistic replication, the following line can
+                % be commented out. It means that we don't wait for any replies
+                % from replicas.
+                %receive_repl_replies(R, Prev, Tries, Nrepl)
+        end.
 
-        {ok, Prev, _} = gen_server:call(ringo_node, get_neighbors),
-        error_logger:info_report({"Repl Prev", Prev}),
-        gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
-                {repl_put, EntryID, Entry, Me, DServer, Nrepl}}),
-        receive_repl_replies(R, Tries, Nrepl).
-
-receive_repl_replies(_, _, 0) -> ok;
-receive_repl_replies({_, _, EntryID, _, _} = R, Tries, N) ->
+% If receive_repl_replies is run on the same process as ringo_domain, note that
+% receive may have to select repl_reply replies amongst are large number of 
+% incoming messages, which is expensive.
+receive_repl_replies(_, _, _, 0) -> ok;
+receive_repl_replies({_, _, EntryID, _, _} = R, Prev, Tries, _N) ->
         receive
                 {repl_reply, {ring_too_small, EntryID}} ->
                         ok;
                 {repl_reply, {ok, EntryID}} ->
-                        receive_repl_replies(R, Tries, N - 1)
+                        % Opportunistic replication: If at least
+                        % one replica succeeds, we are happy (and
+                        % assume that quite likely more than one have
+                        % succeeded)
+                        ok
+                        % For less opportunistic replication, uncomment
+                        % the following line to wait for more replies.
+                        %receive_repl_replies(R, Tries, N - 1)
         after ?REPL_TIMEOUT ->
-                replicate_proc(R, Tries + 1)
+                % Re-send policy: Disable this for faster operation. 
+                replicate(R, Prev, Tries + 1)
         end.
 
 open_or_clone(Req, From, D) ->
