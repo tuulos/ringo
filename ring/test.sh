@@ -21,6 +21,8 @@ cd test
 
 
 if [[ -z $1 || $1 == "rw" ]]; then
+echo "*** Codec test ***"
+run test_readwrite codec_test 
 echo "*** Write test ***"
 run test_readwrite write_test 100000
 echo "*** Read test ***"

@@ -1,10 +1,25 @@
 -module(ringo_reader).
 
--export([fold/3, read_external/3]).
+-export([fold/3, decode/1, read_external/3]).
 -include("ringo_store.hrl").
 
 -define(NI, :32/little).
 -record(iter, {z, db, f, prev, prev_head, acc}).
+
+decode(X) when is_list(X) ->
+        decode(iolist_to_binary(X));
+
+decode(<<?MAGIC_HEAD?NI, _HeadCRC?NI, Time?NI, EntryID?NI, FlagsB?NI,
+        _KeyCRC?NI, KeyLen?NI, _ValCRC?NI, ValLen?NI, Key:KeyLen/binary,
+        ValueB:ValLen/binary, ?MAGIC_TAIL?NI>>) ->
+
+        Flags = parse_flags(FlagsB),
+        Value = case proplists:is_defined(external, Flags) of
+                true -> <<FileCRC:32, FileName/binary>> = ValueB,
+                        {ext, {FileCRC, FileName}};
+                false -> {int, ValueB}
+        end,
+        {Time, EntryID, Flags, Key, Value}.
 
 fold(F, Acc0, DBName) ->
         {ok, DB} = file:open(DBName, [read, raw, binary]),

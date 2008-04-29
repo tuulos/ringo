@@ -1,7 +1,33 @@
 -module(test_readwrite).
--export([write_test/1, read_test/1, extfile_write_test/1, extfile_read_test/0]).
+-export([codec_test/0, write_test/1, read_test/1, extfile_write_test/1]).
+-export([extfile_read_test/0]).
 
 -include("ringo_store.hrl").
+
+codec_test() ->
+        Domain = #domain{home = "test_data", db = x, z = zlib:open()},
+        EntryID = random:uniform(4294967295),
+        Key = <<"dssdwe1we1234124e">>,
+        Val = <<"dssddsaswqe-">>,
+        Flags = [overwrite],
+        
+        io:fwrite("Encoding / decoding internal entry..~n", []),
+        {Ent1, _} = ringo_writer:make_entry(Domain, EntryID, Key, Val, Flags),
+        {_Time, EntryID, Flags, Key, {int, Val}} = ringo_reader:decode(Ent1),
+        
+        io:fwrite("Encoding / decoding external entry..~n", []),
+        {ok, Bash} = file:read_file("/bin/bash"),
+        {Ent2, _} = ringo_writer:make_entry(Domain, EntryID, Key, Bash, Flags),
+        {_Time, EntryID, Flags2, Key, {ext, {_, Path}}} =
+                ringo_reader:decode(Ent2), 
+        
+        case proplists:is_defined(external, Flags2) of
+                true -> io:fwrite("Codec works ok.~n", []);
+                false -> io:fwrite("Codec returned invalid flags: ~w~n",
+                                        [Flags2])
+        end,
+        halt().        
+       
 
 write_test(Entries) when is_list(Entries) ->
         write_test(list_to_integer(lists:flatten(Entries)));
