@@ -57,8 +57,6 @@ op1([Domain, Key], Params, Value) ->
         PParams = parse_params(Params, ?PUT_DEFAULTS),
         Flags = parse_flags(PParams, ?PUT_FLAGS),
 
-        error_logger:info_report({"PUT", Domain, "KEY", Key,
-                "DATA LENGTH", size(Value)}),
         % CHUNK FIX: If chunk 0 fails, try chunk C + 1 etc.
         {ok, DomainID} = ringo_send(Domain, 0, 
                 {put, list_to_binary(Key), Value, Flags, self()}),
@@ -158,9 +156,7 @@ get_active_nodes() ->
         true ->
                 Pid ! {get, self()},
                 receive
-                        {nodes, Nodes} ->
-                                error_logger:info_report({"Sorted Nodes", Nodes}),
-                                Nodes
+                        {nodes, Nodes} -> Nodes
                 after 100 ->
                         throw({http_error, 408, "Active node request timeout"})
                 end
