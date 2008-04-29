@@ -1,4 +1,4 @@
-import tempfile, os, os.path, subprocess, md5, time, sys, random
+import tempfile, os, os.path, subprocess, md5, time, sys, random, threading
 import ringogw
 
 home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
@@ -281,7 +281,6 @@ def test09_killowner():
 # realistic case the owner would have to active the distant node by itself with
 # the global resync process.
 def test10_distantsync():
-        check1 = lambda x: _check_results(x, 1)
         did = domain_id("distantsync", 0)
 
         distant_id, p = new_node(make_domain_id(int(did, 16) - 20))
@@ -322,6 +321,63 @@ def test10_distantsync():
                 print "Resync didn't finish in time"
                 return False
 
+# This test checks that code updates can be perfomed smoothly in the
+# ring. This happens by restarting nodes one by one. Restarting shouldn't
+# distrupt concurrent put operations, except some re-requests may be
+# needed.
+def test11_simcodeupdate():
+        names = ["simcodeupdate1", "simcodeupdate2"]
+        def pput():
+                for i in range(10):
+                        k = "item-%d" % i
+                        v = "testitem-%d" % i
+                        for name in names:
+                                check_reply(ringogw.request(
+                                        "/mon/data/%s/%s" % (name, k), v,
+                                                retries = 10))
+                                        
+        did1 = int(domain_id(names[0], 0), 16)
+        did2 = int(domain_id(names[1], 0), 16)
+        mi = min(did1, did2)
+        ids = [make_domain_id(mi + i) for i in range(10)]
+        
+        if not _test_ring(0, 10, ids):
+                return False
+        
+        print "Creating domains.."
+
+        for name in names:
+                check_reply(ringogw.request(
+                        "/mon/data/%s?create&nrepl=6" % name, ""))
+
+        print "Restarting nodes one at time:"
+        for id in ids:
+                print "Restart", id
+                t = threading.Thread(target = pput).start()
+                kill_node(id)
+                new_node(id)
+                # if the pause is too small, say 1sec, there's a danger
+                # that replicas aren't yet fully propagated for the previous
+                # requests and killing a node might make a replica jump over
+                # the zombie and make a new replica domain. In the extreme
+                # case the domain is propagated to all the nodes in the ring.
+                time.sleep(7)
+        
+        print "All the nodes restarted."
+        print "NB: Test may sometimes fail due to a wrong number of replicas,"
+        print "typically 7 instead of 8. This is ok."
+
+        # actually the number of replicas may be off by one here, if a put
+        # requests hits a node while its down. So don't worry if the test fails
+        # due to a wrong number of replicas.
+        if not _wait_until("/mon/domains/domain?id=0x" + make_domain_id(did1),
+                        lambda x: check_entries(x, 8, 100), 300):
+                return False
+        if not _wait_until("/mon/domains/domain?id=0x" + make_domain_id(did2),
+                        lambda x: check_entries(x, 8, 100), 300):
+                return False
+        return True
+        
 
 
         
