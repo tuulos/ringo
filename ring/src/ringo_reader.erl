@@ -1,10 +1,14 @@
 -module(ringo_reader).
 
--export([fold/3, decode/1, read_external/3]).
+-export([fold/3, is_external/1, decode/1, read_external/2]).
 -include("ringo_store.hrl").
 
 -define(NI, :32/little).
--record(iter, {z, db, f, prev, prev_head, acc}).
+-record(iter, {db, f, prev, prev_head, acc}).
+
+is_external(X) when is_list(X) -> is_external(iolist_to_binary(X));
+is_external(<<_:16/binary, _:7, 1:1, _/binary>>) -> true;        
+is_external(_) -> false.
 
 decode(X) when is_list(X) ->
         decode(iolist_to_binary(X));
@@ -16,20 +20,18 @@ decode(<<?MAGIC_HEAD?NI, _HeadCRC?NI, Time?NI, EntryID?NI, FlagsB?NI,
         Flags = parse_flags(FlagsB),
         Value = case proplists:is_defined(external, Flags) of
                 true -> <<FileCRC:32, FileName/binary>> = ValueB,
-                        {ext, {FileCRC, FileName}};
+                        {ext, {FileCRC, binary_to_list(FileName)}};
                 false -> {int, ValueB}
         end,
         {Time, EntryID, Flags, Key, Value}.
 
 fold(F, Acc0, DBName) ->
         {ok, DB} = file:open(DBName, [read, raw, binary]),
-        Z = zlib:open(),
         try
-                read_item(#iter{z = Z, db = DB, f = F, 
-                        prev = {0, 0}, prev_head = 0, acc = Acc0})
+                read_item(#iter{db = DB, f = F, prev = {0, 0},
+                        prev_head = 0, acc = Acc0})
         catch
                 {eof, #iter{acc = Acc}} ->
-                        zlib:close(Z),
                         file:close(DB),
                         Acc
         end.
@@ -59,7 +61,7 @@ read_head(#iter{db = DB} = Q, <<?MAGIC_HEAD?NI, HeadCRC?NI>> = PHead) ->
         {ok, Pos} = file:position(DB, cur),
         NQ = Q#iter{prev_head = Pos},
         Head = read(NQ, 7 * 4),
-        read_body(NQ, Head, check(NQ, Head, HeadCRC), PHead);
+        read_body(NQ, Head, check(Head, HeadCRC), PHead);
 
 read_head(Q, _) ->
         seek_magic(Q).
@@ -74,13 +76,13 @@ read_body(Q, <<Time?NI, EntryID?NI, Flags?NI, KeyCRC?NI,
                 read(Q, KeyLen + ValLen + 4),
         Entry = <<PHead/binary, Head/binary, Body/binary>>,
         validate(Q, {Time, EntryID, Flags, Key, Val, Entry},
-                check(Q, Key, KeyCRC), check(Q, Val, ValCRC), End).
+                check(Key, KeyCRC), check(Val, ValCRC), End).
 
 validate(_, Ret, true, true, ?MAGIC_TAIL_B) -> Ret;
 validate(Q, _, _, _, _) -> seek_magic(Q).
         
-check(#iter{z = Z}, Val, CRC) ->
-        zlib:crc32(Z, Val) == CRC.
+check(Val, CRC) ->
+        erlang:crc32(Val) == CRC.
 
 seek_magic(#iter{db = DB, prev_head = 0} = Q) ->
         {ok, _} = file:position(DB, {bof, 1}),
@@ -109,12 +111,12 @@ read(#iter{db = DB} = Q, N) ->
 parse_flags(Flags) ->
         [S || {S, F} <- ?FLAGS, Flags band F > 0].
 
-read_external(Home, Z, <<CRC:32, ExtFile/binary>>) ->
+read_external(Home, <<CRC:32, ExtFile/binary>>) ->
         ExtPath = filename:join(Home, binary_to_list(ExtFile)),
         case file:read_file(ExtPath) of
                 {error, Reason} -> {io_error, Reason};
                 {ok, Value} ->
-                        V = zlib:crc32(Z, Value),
+                        V = erlang:crc32(Value),
                         if V == CRC -> {ok, Value};
                         true -> corrupted_file
                         end

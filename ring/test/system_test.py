@@ -126,6 +126,10 @@ def _test_repl(name, n, nrepl, nitems, create_ring = True):
         return _wait_until("/mon/domains/domain?id=0x" + domainid,
                 lambda x: check_entries(x, n, nitems), 50)
 
+def _check_extfiles(node, domainid, num):
+        files = os.listdir("%s/%s/rdomain-%s/" % (home_dir, node, domainid))
+        return len([f for f in files if f.startswith("value")]) == num
+
 # make a ring, check that converges
 def test01_ring10():
         return _test_ring(10)
@@ -377,15 +381,54 @@ def test11_simcodeupdate():
                         lambda x: check_entries(x, 8, 100), 300):
                 return False
         return True
-        
 
+# Check that putting large (1M) entries to external files works in
+# replication and resyncing.
+def test12_extsync():
+        if not _test_ring(5):
+                return False
+        
+        node, domainid = check_reply(ringogw.request(
+                "/mon/data/extsync?create&nrepl=6", ""))[0]
+        print "D", domainid
+                
+        v = "!" * 1024**2
+        print "Putting ten 1M values"
+        for i in range(10):
+                check_reply(ringogw.request("/mon/data/extsync/fub-%d" % i,
+                        v, verbose = True))
+        if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: x[0] == 200, 30):
+                return False
+        
+        replicas = [n['node'].split('-')[1].split('@')[0] for n in\
+                ringogw.request("/mon/domains/domain?id=0x" + domainid)[1][3]]
+
+        for repl in replicas:
+                if not _check_extfiles(repl, domainid, 10):
+                        print "Ext files not found on node", repl
+                        return False
+        print "Ext files written ok to all replicas"
+
+        newid, p = new_node()
+        print "Creating a new node", newid
+        print "Putting an extra item (should go to the new node as well)",
+        check_reply(ringogw.request("/mon/data/extsync/extra",
+                v, verbose = True))
+
+        if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: check_entries(x, 6, 11), 300):
+                return False
+       
+        if not _check_extfiles(newid, domainid, 11):
+                print "Ext files not found on the new node"
+                return False
+        
+        return True
 
         
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end
-# - same with large, external entries
-# - testcase that simulates code update: crash nodes one by one in sequence,
-#   should cause minimal / none downtime
 
 ringogw.sethost(sys.argv[1])
 for f in sorted([f for f in globals().keys() if f.startswith("test")]):

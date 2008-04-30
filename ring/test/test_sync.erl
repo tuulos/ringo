@@ -8,12 +8,10 @@ basic_tree_test(Entries) when is_list(Entries) ->
 
 basic_tree_test(Entries) ->
         {ok, DB} = file:open("test_data/syncdata", [append, raw]),
-        Domain = #domain{home = "test_data", db = DB, z = zlib:open()},
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                Entry = ringo_writer:make_entry(Domain, 
-                        EntryID, <<>>, <<>>, []),
-                ok = ringo_writer:write_entry(DB, Entry)
+                Entry = ringo_writer:make_entry(EntryID, <<>>, <<>>, []),
+                ok = ringo_writer:write_entry("test_data", DB, Entry)
         end, lists:seq(1, Entries)),
 
         S = now(),
@@ -131,20 +129,18 @@ order_test(Entries) when is_list(Entries) ->
 
 order_test(NEntries) ->
         {ok, DB1} = file:open("test_data/orderdata1", [raw, append]),
-        Domain1 = #domain{home = "test_data", db = DB1, z = zlib:open()},
         
         {_, Entries} = lists:unzip(lists:sort(lists:map(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                Entry = ringo_writer:make_entry(Domain1,
-                        EntryID, <<>>, <<>>, []),
-                ok = ringo_writer:write_entry(DB1, Entry),
+                Entry = ringo_writer:make_entry(EntryID, <<>>, <<>>, []),
+                ok = ringo_writer:write_entry("test_data", DB1, Entry),
                 {random:uniform(NEntries), Entry}
         end, lists:seq(1, NEntries)))),
         file:close(DB1),
 
         {ok, DB2} = file:open("test_data/orderdata2", [raw, append]),
         lists:foreach(fun(Entry) ->
-                ok = ringo_writer:write_entry(DB2, Entry)
+                ok = ringo_writer:write_entry("test_data", DB2, Entry)
         end, Entries),
         file:close(DB2),
         

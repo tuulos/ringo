@@ -65,10 +65,8 @@ count_entries(LeafIDs) ->
         end, 0, LeafIDs).
 
 build_merkle_tree(LeafHashes) ->
-        Z = zlib:open(),
         {_, Leaves} = lists:unzip(lists:sort(ets:tab2list(LeafHashes))),
-        Tree = make_next_level(Z, Leaves, [Leaves]),
-        zlib:close(Z),
+        Tree = make_next_level(Leaves, [Leaves]),
         Tree.
 
 % update_leaf_hashes must implement a commutative (accumulated)
@@ -105,14 +103,14 @@ sync_id(EntryID, Time) ->
 sync_id_slot(<<_Time:32, EntryID:32>>) ->
         EntryID band (?NUM_MERKLE_LEAVES - 1).
 
-make_next_level(_, [_], Tree) -> Tree;
-make_next_level(Z, Level, Tree) ->
-        L = make_level(Z, Level, []),
-        make_next_level(Z, L, [L|Tree]).
+make_next_level([_], Tree) -> Tree;
+make_next_level(Level, Tree) ->
+        L = make_level(Level, []),
+        make_next_level(L, [L|Tree]).
 
-make_level(_, [], L) -> lists:reverse(L);
-make_level(Z, [X, Y|R], L) ->
-        make_level(Z, R, [zlib:crc32(Z, <<X:32, Y:32>>)|L]).
+make_level([], L) -> lists:reverse(L);
+make_level([X, Y|R], L) ->
+        make_level(R, [erlang:crc32(<<X:32, Y:32>>)|L]).
 
 %%%
 %%%
@@ -158,7 +156,6 @@ pick([_, _|Level], Parents, N, Res) ->
 collect_leaves([], _) -> [];
 collect_leaves(LeafList, empty) -> [{N, []} || N <- LeafList];
 collect_leaves(LeafList, DBName) ->
-        Z = zlib:open(),
         LeafBag = ets:new(leaves, [bag]),
         ets:insert(LeafBag, [{N, empty} || N <- LeafList]),
         ringo_reader:fold(fun(_, _, _, {Time, EntryID}, _, _) ->
@@ -169,7 +166,6 @@ collect_leaves(LeafList, DBName) ->
                 end
         end, ok, DBName),
         List = group_results(ets:tab2list(LeafBag)),
-        zlib:close(Z),
         ets:delete(LeafBag),
         List.
 

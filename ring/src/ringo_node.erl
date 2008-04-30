@@ -245,7 +245,7 @@ handle_info({nodedown, Node}, R) ->
 %%%
 
 domain_dispatch(Home, DomainID, IsOwner, Prev, Next, Msg) ->
-        error_logger:info_report({"Dispatch", DomainID, IsOwner, Msg}),
+        %error_logger:info_report({"Dispatch", DomainID, IsOwner, Msg}),
         {Alive, S} = domain_lookup(DomainID),
         if Alive -> 
                 Server = S;

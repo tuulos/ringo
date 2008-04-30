@@ -5,20 +5,21 @@
 -include("ringo_store.hrl").
 
 codec_test() ->
-        Domain = #domain{home = "test_data", db = x, z = zlib:open()},
         EntryID = random:uniform(4294967295),
         Key = <<"dssdwe1we1234124e">>,
         Val = <<"dssddsaswqe-">>,
         Flags = [overwrite],
         
         io:fwrite("Encoding / decoding internal entry..~n", []),
-        {Ent1, _} = ringo_writer:make_entry(Domain, EntryID, Key, Val, Flags),
+        {Ent1, _} = ringo_writer:make_entry(EntryID, Key, Val, Flags),
         {_Time, EntryID, Flags, Key, {int, Val}} = ringo_reader:decode(Ent1),
-        
+        false = ringo_reader:is_external(Ent1),
+
         io:fwrite("Encoding / decoding external entry..~n", []),
         {ok, Bash} = file:read_file("/bin/bash"),
-        {Ent2, _} = ringo_writer:make_entry(Domain, EntryID, Key, Bash, Flags),
-        {_Time, EntryID, Flags2, Key, {ext, {_, Path}}} =
+        {Ent2, _} = ringo_writer:make_entry(EntryID, Key, Bash, Flags),
+        true = ringo_reader:is_external(Ent2),
+        {_Time, EntryID, Flags2, Key, {ext, {_, _Path}}} =
                 ringo_reader:decode(Ent2), 
         
         case proplists:is_defined(external, Flags2) of
@@ -34,14 +35,13 @@ write_test(Entries) when is_list(Entries) ->
 
 write_test(Entries) ->
         {ok, DB} = file:open("test_data/data", [append, raw]),
-        Domain = #domain{home = "test_data", db = DB, z = zlib:open()},
         S = now(),
         lists:foreach(fun(I) ->
                 EntryID = random:uniform(4294967295),
                 N = I + 100,
-                Entry = ringo_writer:make_entry(Domain, EntryID, <<"KeyYek:", I:32>>,
+                Entry = ringo_writer:make_entry(EntryID, <<"KeyYek:", I:32>>,
                                 <<"ValueEulav:", N:32>>, []),
-                ok = ringo_writer:write_entry(DB, Entry)
+                ok = ringo_writer:write_entry("test_data", DB, Entry)
         end, lists:seq(1, Entries)),
         io:fwrite("Writing ~b items took ~bms~n",
                 [Entries, round(timer:now_diff(now(), S) / 1000)]),
@@ -85,21 +85,23 @@ extfile_write_test(Entries) when is_list(Entries) ->
 
 extfile_write_test(Entries) ->
         {ok, DB} = file:open("test_data/bigdata", [append, raw]),
-        Domain = #domain{home = "test_data", db = DB, z = zlib:open()},
         {ok, Bash} = file:read_file("/bin/bash"),
         Z = zlib:open(),
         BashCRC = zlib:crc32(Z, Bash),
         S = now(),
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                ringo_writer:write_entry(DB, ringo_writer:make_entry(Domain, EntryID, 
+                ringo_writer:write_entry("test_data", DB, 
+                        ringo_writer:make_entry(EntryID, 
                                 <<"Bash:", BashCRC:32>>, Bash, [])),
                 % entry with an equal EntryID, should be skipped
-                ringo_writer:write_entry(DB, ringo_writer:make_entry(
-                        Domain, EntryID, <<"skipme">>, <<>>, [])),
+                ringo_writer:write_entry("test_data", DB, 
+                        ringo_writer:make_entry(EntryID,
+                                <<"skipme">>, <<>>, [])),
                 NextID = random:uniform(4294967295),
-                ringo_writer:write_entry(DB, ringo_writer:make_entry(Domain, NextID,
-                        <<"small">>, <<"fall">>, []))
+                ringo_writer:write_entry("test_data",
+                        DB, ringo_writer:make_entry(NextID,
+                                <<"small">>, <<"fall">>, []))
         end, lists:seq(1, Entries)),
         io:fwrite("Writing ~b big items took ~bms~n",
                 [Entries, round(timer:now_diff(now(), S) / 1000)]),
