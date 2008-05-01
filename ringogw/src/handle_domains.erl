@@ -1,30 +1,21 @@
 -module(handle_domains).
--export([op/2]).
+-export([op/2, start_check_domains/0]).
 
-op(S, Q) ->
-        spawn(fun() ->
-                case catch register(check_domains, self()) of
-                        {'EXIT', _} -> ok;
-                        _ -> check_domains()
-                end
-        end),
-        op1(S, Q).
-
-op1("node", [{"name", NodeS}|_]) ->
+op("node", [{"name", NodeS}|_]) ->
         Node = list_to_existing_atom(NodeS),
         {ok, [fetch_domaininfo(X) || X <- 
                 ets:lookup(infopack_cache, {node, Node})]};
 
-op1("domain", [{"name", NameS}|_]) ->
+op("domain", [{"name", NameS}|_]) ->
         Name = list_to_binary(NameS),
         {ok, [fetch_domaininfo(X) || X <-
                 ets:lookup(infopack_cache, {name, Name})]};
 
-op1("domain", [{"id", [$0, $x|IdS]}|_]) ->
+op("domain", [{"id", [$0, $x|IdS]}|_]) ->
         op("domain", [{"id", integer_to_list(
                 erlang:list_to_integer(IdS, 16))}]);
 
-op1("domain", [{"id", IdS}|_]) ->
+op("domain", [{"id", IdS}|_]) ->
         DomainID = list_to_integer(IdS),
        
         [{_, {Name, _, Chunk}}|_] = Repl =
@@ -43,7 +34,7 @@ op1("domain", [{"id", IdS}|_]) ->
                 end
         end, Nodes)]};
 
-op1("reset", _Query) ->
+op("reset", _Query) ->
         catch exit(whereis(check_domains), kill),
         {ok, {ok, <<"killed">>}}.
 
@@ -56,6 +47,10 @@ fetch_domaininfo({_, DomainID}) ->
         end,
         {list_to_binary(erlang:integer_to_list(DomainID, 16)),
                 Name, Node, Chunk, Active, length(Repl)}.
+
+start_check_domains() ->
+        {ok, spawn_link(fun() -> register(check_domains, self()),
+                check_domains() end)}.
 
 check_domains() ->
         catch ets:new(infopack_cache, [named_table, bag]),

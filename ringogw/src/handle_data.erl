@@ -1,5 +1,5 @@
 -module(handle_data).
--export([op/2, op/3]).
+-export([op/2, op/3, start_active_node_updater/0]).
 
 -include("ringo_store.hrl").
 
@@ -20,12 +20,12 @@
 % GET: /gw/data/domain_name/key_name
 % PUT: /gw/data/domain_name/key_name
 
-op(Script, Params, Data) ->
-        spawn(fun update_active_nodes/0),
-        op1(Script, Params, Data).
+%op(Script, Params, Data) ->
+        %spawn(fun update_active_nodes/0),
+%        op1(Script, Params, Data).
 
 % CREATE
-op1([C|_] = Domain, Params, _Data) when is_integer(C) ->
+op([C|_] = Domain, Params, _Data) when is_integer(C) ->
         PParams = parse_params(Params, ?CREATE_DEFAULTS),
         Flags = parse_flags(PParams, ?CREATE_FLAGS),
         error_logger:info_report({"CREATE", Domain, "WITH", PParams}),
@@ -50,10 +50,10 @@ op1([C|_] = Domain, Params, _Data) when is_integer(C) ->
         end;
 
 % PUT
-op1([_Domain, Key], _Params, _Value) when length(Key) > ?KEY_MAX ->
+op([_Domain, Key], _Params, _Value) when length(Key) > ?KEY_MAX ->
         throw({http_error, 400, <<"Key too large">>});
 
-op1([Domain, Key], Params, Value) ->
+op([Domain, Key], Params, Value) ->
         PParams = parse_params(Params, ?PUT_DEFAULTS),
         Flags = parse_flags(PParams, ?PUT_FLAGS),
 
@@ -77,19 +77,19 @@ op1([Domain, Key], Params, Value) ->
                         throw({'EXIT', Error})
         end;
 
-op1(_, _, _) ->
+op(_, _, _) ->
         throw({http_error, 400, <<"Invalid request">>}).
 
-op(Script, Params) ->
-        spawn(fun update_active_nodes/0),
-        op1(Script, Params).
+%op(Script, Params) ->
+        %spawn(fun update_active_nodes/0),
+%        op1(Script, Params).
 
 % GET
-op1([Domain, Key], _Params) ->
+op([Domain, Key], _Params) ->
         error_logger:info_report({"GET", Domain, "KEY", Key}),
         {ok, []};
 
-op1(_, _) ->
+op(_, _) ->
         throw({http_error, 400, <<"Invalid request">>}).
 
 %%%
@@ -150,25 +150,20 @@ formatid(ID) ->
 %%%
 
 get_active_nodes() ->
-        Pid = whereis(active_node_updater),
-        if Pid == undefined ->
-                active_nodes();
-        true ->
-                Pid ! {get, self()},
-                receive
-                        {nodes, Nodes} -> Nodes
-                after 100 ->
-                        throw({http_error, 408, "Active node request timeout"})
-                end
+        active_node_updater ! {get, self()},
+        receive
+                {nodes, Nodes} -> Nodes
+        after 100 ->
+                throw({http_error, 408, "Active node request timeout"})
         end.
 
+start_active_node_updater() ->
+        {ok, spawn_link(fun() -> update_active_nodes() end)}.
+
 update_active_nodes() ->
-        case catch register(active_node_updater, self()) of
-                {'EXIT', _} -> ok;
-                _ -> {ok, _} = 
-                        timer:send_interval(?ACTIVE_NODE_UPDATE, update),
-                        update_active_nodes(active_nodes())
-        end.
+        register(active_node_updater, self()),
+        timer:send_interval(?ACTIVE_NODE_UPDATE, update),
+        update_active_nodes(active_nodes()).
 
 update_active_nodes(Nodes) ->
         receive

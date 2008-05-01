@@ -444,7 +444,7 @@ def test12_extsync():
 
 tests = sorted([f for f in globals().keys() if f.startswith("test")])
 
-if sys.argv[2] == '?':
+if len(sys.argv) > 2 and sys.argv[2] == '?':
         print "Available tests:\n", "\n".join([t[7:] for t in tests])
         sys.exit(1)
 

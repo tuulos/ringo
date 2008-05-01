@@ -1,13 +1,7 @@
 -module(handle_ring).
--export([op/2]).
+-export([op/2, start_check_node_status/0]).
 
 op("nodes", _Query) ->
-        spawn(fun() ->
-                case catch register(check_node_status, self()) of
-                        {'EXIT', _} -> ok;
-                        _ -> check_node_status()
-                end
-        end),
         case catch ets:tab2list(node_status_table) of 
                 {'EXIT', _} -> {ok, []};
                 L -> {ok, check_ring(ringo_util:group_pairs(L))}
@@ -17,6 +11,10 @@ op("reset", _Query) ->
         catch exit(whereis(check_node_status), kill),
         {ok, {ok, <<"killed">>}}.
 
+start_check_node_status() ->
+        {ok, spawn_link(fun() -> register(check_node_status, self()),
+                check_node_status() end)}.
+        
 check_node_status() ->
         ets:new(tmptable, [named_table, bag]),
         
