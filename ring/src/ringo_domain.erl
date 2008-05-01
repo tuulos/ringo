@@ -147,8 +147,6 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         GlobalInt = get_iparam("GLOBAL_INTERVAL", ?GLOBAL_RESYNC_INTERVAL),
         ExtInt = get_iparam("CHECK_EXT_INTERVAL", ?CHECK_EXTERNAL_INTERVAL),
         
-        error_logger:info_report({"ExtInt", ExtInt}),
-
         RTime = round(ResyncInt + random:uniform(ResyncInt * 0.5)),
         if IsOwner ->
                 {ok, _} = timer:apply_interval(RTime, ringo_syncdomain,

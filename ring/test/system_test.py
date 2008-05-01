@@ -393,7 +393,6 @@ def test12_extsync():
         
         node, domainid = check_reply(ringogw.request(
                 "/mon/data/extsync?create&nrepl=6", ""))[0]
-        print "D", domainid
                 
         v = "!" * 1024**2
         print "Putting ten 1M values"
@@ -413,28 +412,44 @@ def test12_extsync():
                         return False
         print "Ext files written ok to all replicas"
 
+        print "Deleting some files on node", replicas[0]
+        print "to check that check_external works:" 
+        files = os.listdir("%s/%s/rdomain-%s/" %
+                        (home_dir, replicas[0], domainid))
+        for rem in random.sample(
+                        [f for f in files if f.startswith("value")], 5):
+                print "Deleting", rem
+                os.remove("%s/%s/rdomain-%s/%s" %
+                        (home_dir, replicas[0], domainid, rem))
+        
         newid, p = new_node()
         print "Creating a new node", newid
-        print "Putting an extra item (should go to the new node as well)",
+        print "Putting an extra item (should go to the new node as well)"
         check_reply(ringogw.request("/mon/data/extsync/extra",
                 v, verbose = True))
 
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
                         lambda x: check_entries(x, 6, 11), 300):
                 return False
-       
-        if not _check_extfiles(newid, domainid, 11):
-                print "Ext files not found on the new node"
-                return False
         
+        for repl in replicas + [newid]:
+                if not _check_extfiles(newid, domainid, 11):
+                        print "All ext files not found on node", repl 
+                        return False
         return True
 
         
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end
 
+tests = sorted([f for f in globals().keys() if f.startswith("test")])
+
+if sys.argv[2] == '?':
+        print "Available tests:\n", "\n".join([t[7:] for t in tests])
+        sys.exit(1)
+
 ringogw.sethost(sys.argv[1])
-for f in sorted([f for f in globals().keys() if f.startswith("test")]):
+for f in tests:
         prefix, testname = f.split("_", 1)
         if len(sys.argv) > 2 and testname not in sys.argv[2:]:
                 continue
