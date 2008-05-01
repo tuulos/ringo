@@ -5,6 +5,9 @@ home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
 node_id = 0
 conn = None
 
+os.environ['RESYNC_INTERVAL'] = '10000'
+os.environ['CHECK_EXT_INTERVAL'] = '10000'
+
 class ReplyException(Exception):
         pass
 
@@ -18,7 +21,7 @@ def new_node(id = None):
                 os.mkdir(path)
         p = subprocess.Popen(["start_ringo.sh", path],
                 stdin = subprocess.PIPE, stdout = subprocess.PIPE,
-                        stderr = subprocess.PIPE)
+                        stderr = subprocess.PIPE, env = os.environ)
         return id, p
 
 def kill_node(id):

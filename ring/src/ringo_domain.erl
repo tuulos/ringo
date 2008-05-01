@@ -91,6 +91,12 @@ start(Home, DomainID, IsOwner, Prev, Next) ->
                 {error, {already_started, Server}} -> {ok, Server}
         end.
 
+get_iparam(Name, Default) ->
+        case os:getenv(Name) of
+                false -> Default;
+                Value -> list_to_integer(Value)
+        end.
+
 init([Home, DomainID, IsOwner, Prev, Next]) ->
         error_logger:info_report({"Domain opens", DomainID, IsOwner}),
         {A1, A2, A3} = now(),
@@ -137,21 +143,25 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         
         ets:insert(Stats, {started, ringo_util:format_timestamp(now())}),
 
-        RTime = round(?RESYNC_INTERVAL +
-                        random:uniform(?RESYNC_INTERVAL * 0.5)),
+        ResyncInt = get_iparam("RESYNC_INTERVAL", ?RESYNC_INTERVAL),
+        GlobalInt = get_iparam("GLOBAL_INTERVAL", ?GLOBAL_RESYNC_INTERVAL),
+        ExtInt = get_iparam("CHECK_EXT_INTERVAL", ?CHECK_EXTERNAL_INTERVAL),
+        
+        error_logger:info_report({"ExtInt", ExtInt}),
+
+        RTime = round(ResyncInt + random:uniform(ResyncInt * 0.5)),
         if IsOwner ->
                 {ok, _} = timer:apply_interval(RTime, ringo_syncdomain,
                         resync, [self(), owner]),
-                GTime = round(?GLOBAL_RESYNC_INTERVAL + 
-                                random:uniform(?GLOBAL_RESYNC_INTERVAL * 0.5)),
+                GTime = round(GlobalInt + random:uniform(GlobalInt * 0.5)),
                 {ok, _} = timer:apply_interval(GTime, ringo_syncdomain,
                                 global_resync, [DomainID]);
         true ->
                 {ok, _} = timer:apply_interval(RTime, ringo_syncdomain,
                         resync, [self(), replica])
         end,
-        {ok, _} = timer:apply_interval(?CHECK_EXTERNAL_INTERVAL,
-                                ringo_external, check_external, [self()]),
+        {ok, _} = timer:apply_interval(ExtInt, ringo_external, 
+                check_external, [self()]),
         {ok, Domain}.
 
 %%%
