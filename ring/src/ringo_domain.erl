@@ -74,6 +74,7 @@
 -define(DOMAIN_CHUNK_MAX, 104857600). % 100MB
 -define(SYNC_BUF_MAX_WORDS, 1000000).
 
+-define(CHECK_EXTERNAL_INTERVAL, 30000). % make this longer!
 -define(RESYNC_INTERVAL, 30000). % make this longer!
 -define(GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
 -define(STATS_WINDOW_LEN, 5).
@@ -149,6 +150,8 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
                 {ok, _} = timer:apply_interval(RTime, ringo_syncdomain,
                         resync, [self(), replica])
         end,
+        {ok, _} = timer:apply_interval(?CHECK_EXTERNAL_INTERVAL,
+                                ringo_external, check_external, [self()]),
         {ok, Domain}.
 
 %%%
@@ -201,8 +204,8 @@ handle_call({get_file_handle, ExtFile}, _, #domain{home = Home} = D) ->
                 Other -> Other
         end,
         {reply, F, D}.
-        
-        
+
+              
 %%%
 %%% Basic domain operations: Create, put, get 
 %%%
@@ -472,6 +475,25 @@ handle_cast({find_owner, Node, N}, #domain{owner = false, id = DomainID,
         true ->
                 {noreply, D}
         end;
+
+handle_cast({find_owner, _, _}, D) ->
+        {noreply, D};
+
+handle_cast({find_file, ExtFile, {Pid, Node} = From, N},
+                #domain{home = Home, prevnode = Prev, id = DomainID} = D) 
+                        when N == 0; N < ?MAX_RING_SIZE, Node =/= node() ->
+        
+        case file:read_file_info(filename:join(Home, ExtFile)) of
+                {ok, _} -> error_logger:info_report({"File", ExtFile, "Found"}),
+                        Pid ! {file_found, ExtFile, self()};
+                _ -> gen_server:cast({ringo_node, Prev},
+                        {{domain, DomainID}, {find_file, ExtFile, From, N + 1}})
+        end,
+        {noreply, D};
+
+handle_cast({find_file, _, {Pid, _}, _}, D) ->
+        Pid ! file_not_found,
+        {noreply, D};
 
 handle_cast({get_status, From}, #domain{id = DomainID, size = Size,
         num_entries = NumE, full = Full, owner = Owner, stats = Stats} = D) ->

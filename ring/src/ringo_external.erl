@@ -1,5 +1,11 @@
 -module(ringo_external).
--export([fetch_external/1]).
+-export([fetch_external/1, check_external/1]).
+
+-include("ringo_store.hrl").
+
+%%% fetch_external() is a permanent process that takes care of copying external
+%%% files to this node as a part of the syncing process. In the normal put / 
+%%% replica put case this is not needed.
 
 fetch_external(Home) ->
         fetch_external(Home, [], {none, none}).
@@ -13,15 +19,14 @@ fetch_external(Home, FetchList, {Worker, TmpFile} = P) ->
                 {fetch, {From, Entry}} ->
                         fetch_external(Home, [{From,
                                 parse_entry(Home, Entry)}|FetchList], P);
+                {'DOWN', Worker, _, _, normal} ->
+                        error_logger:info_report(
+                                {"File", TmpFile, "fetched ok"}),
+                        fetch_external(Home, FetchList, {none, none});
                 {'DOWN', Worker, _, _, Reason} ->
-                        if Reason == normal ->
-                                error_logger:info_report(
-                                        {"File", TmpFile, "fetched ok"});
-                        true -> 
-                                error_logger:info_report(
-                                        {"File", TmpFile, "error", Reason}),
-                                file:delete(TmpFile)
-                        end,
+                        error_logger:info_report(
+                                {"File", TmpFile, "error", Reason}),
+                        file:delete(TmpFile),
                         fetch_external(Home, FetchList, {none, none})
         end.
 
@@ -46,16 +51,62 @@ fetch({From, {SrcFile, TmpFile, DstFile}}) ->
         file:close(DstIO).
 
 
-%copy_and_checksum(DstIO, SrcIO) ->
-%        {ok, Data} = file:read(SrcIO, ?BUF_SIZE),
-%        ok = file:write(DstIO, Data),
-%        copy_and_checksum(DstIO, SrcIO, crc32(Data)).
-%
-%copy_and_checksum(DstIO, SrcIO, CRC) ->
-%        case file:read(SrcIO, ?BUF_SIZE) of
-%                {ok, Data} ->
-%                        ok = file:write(DstIO, Data),
-%                        copy_and_checksum(DstIO, SrcIO, crc32(CRC, Data));
-%                eof -> {ok, CRC};
-%                Error -> {error, Error}
-%        end
+%%%
+%%% check_external is a periodic process that goes through the DB file, and for
+%%% each external entry, checks that the corresponding file really exists on
+%%% the domain directory. If it doesn't, it tries to find a copy of the file
+%%% from another node using a find_file request. Once a copy has been found,
+%%% it sends a fetch request to the fetch_external process (above).
+%%%
+%%% Note that the find_file request is made only for the first missing file.
+%%% If multiple files are missing, we opportunistically assume that the same
+%%% node might have a copy of them, too. If the assumption fails, next time
+%%% we will make a find_file request for the second missing file etc. In the
+%%% worst case, finding N missing files requires N check_external() runs and 
+%%% N find_file requests to be found.
+%%%
+
+check_external(This) ->
+        error_logger:info_report({"Check external starts"}),
+        #domain{dbname = DBName, stats = Stats, home = Home, extproc = Ext} 
+                = gen_server:call(This, get_current_state),
+        {NExt, NMiss, _} = ringo_reader:fold(fun(_, _, _, _, Entry, Nfo) ->
+                check_entry(ringo_reader:is_external(Entry), 
+                        Home, Entry, This, Nfo, Ext)
+        end, {0, 0, none}, DBName),
+        error_logger:info_report({"Check external finishes:",
+                NExt, "external", NMiss, "missing"}),
+        ringo_domain:stats_buffer_add(Stats, external_entries, {NExt, NMiss}).
+
+% internal entry, do nothing
+check_entry(false, _, _, _, Nfo, _) -> Nfo;
+% external entry, check that the file exists
+check_entry(true, Home, Entry, This, {N, M, FileSrc}, Ext) ->
+        % CRC checkin could be added here to detect random disk corruption
+        {_, _, _, _, {ext, {_CRC, ExtFile}}} = ringo_reader:decode(Entry),
+        case file:read_file_info(filename:join(Home, ExtFile)) of
+                {ok, _} -> {N + 1, M, FileSrc};
+                _ -> {N + 1, M + 1, handle_missing_file(This, 
+                        Entry, ExtFile, FileSrc, Ext)}
+        end.
+
+% We don't know yet from which node we can fetch the missing files ->
+% Find it out with a find_file request.
+handle_missing_file(This, Entry, ExtFile, none, Ext) ->
+        error_logger:warning_report({"File", ExtFile, "missing"}),
+        gen_server:cast(This, {find_file, ExtFile, {self(), node()}, 0}),
+        receive
+                {file_found, ExtFile, FileSrc} -> handle_missing_file(This,
+                        Entry, ExtFile, FileSrc, Ext);
+                _ -> none
+        after 30000 -> none
+        end;
+
+% We already know that FileSrc matched some previous missing file, so quite
+% likely it has this Entry as well. If not, fetch() will fail, but maybe next
+% time we will make a find_file call specifically for this Entry.
+handle_missing_file(_, Entry, _, FileSrc, Ext) ->
+        Ext ! {fetch, {FileSrc, Entry}},
+        FileSrc. 
+
+
