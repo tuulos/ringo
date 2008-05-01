@@ -192,10 +192,16 @@ handle_call(get_domaininfo, _From, #domain{info = Info} = D) ->
 handle_call(get_current_state, _From, D) ->
         {reply, D, D};
 
-handle_call({get_file_handle, ExtFile}, _From, #domain{home = Home} = D) ->
+handle_call({get_file_handle, ExtFile}, _, #domain{home = Home} = D) ->
         ExtPath = filename:join(Home, ExtFile),
-        error_logger:info_report({"Open", ExtPath}),
-        {reply, file:open(ExtPath, [read, binary]), D}.
+        F = case file:open(ExtPath, [read, binary]) of
+                {ok, File} = R -> 
+                        % caller takes care of the file, not me
+                        unlink(File), R;
+                Other -> Other
+        end,
+        {reply, F, D}.
+        
         
 %%%
 %%% Basic domain operations: Create, put, get 
@@ -365,7 +371,7 @@ handle_cast({sync_write_entry, {Entry, {}} = E, From},
         case ringo_reader:is_external(Entry) of
                 true ->
                         error_logger:info_report({"External!"}),
-                        Ext ! {fetch, From, Entry};
+                        Ext ! {fetch, {From, Entry}};
                 false -> ok
         end,
         {noreply, do_write(E, D)};
