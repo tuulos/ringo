@@ -1,6 +1,6 @@
 -module(ringo_reader).
 
--export([fold/3, is_external/1, decode/1, read_external/2]).
+-export([fold/3, fold/4, is_external/1, decode/1, read_external/2]).
 -include("ringo_store.hrl").
 
 -define(NI, :32/little).
@@ -26,28 +26,38 @@ decode(<<?MAGIC_HEAD?NI, _HeadCRC?NI, Time?NI, EntryID?NI, FlagsB?NI,
         {Time, EntryID, Flags, Key, Value}.
 
 fold(F, Acc0, DBName) ->
+        fold(F, Acc0, DBName, false).
+
+fold(F, Acc0, DBName, WithPos) ->
         {ok, DB} = file:open(DBName, [read, raw, binary]),
         try
                 read_item(#iter{db = DB, f = F, prev = {0, 0},
-                        prev_head = 0, acc = Acc0})
+                        prev_head = 0, acc = Acc0}, WithPos)
         catch
+                % callback function may throw(eof) if it wants
+                % to stop iterating
                 {eof, #iter{acc = Acc}} ->
+                        file:close(DB),
+                        Acc;
+                {eof, Acc} ->
                         file:close(DB),
                         Acc
         end.
 
-read_item(#iter{f = F, prev = Prev, acc = Acc} = Q) ->
-        {Time, EntryID, Flags, Key, Val, Entry} = read_entry(Q),
+read_item(#iter{f = F, prev = Prev, acc = Acc} = Q, WithPos) ->
+        {NQ, {Time, EntryID, Flags, Key, Val, Entry}} = read_entry(Q),
         ID = {Time, EntryID},
         % skip duplicate items
-        if Prev == EntryID ->
-                AccN = Acc;
+        AccN = if Prev == EntryID -> Acc;
         true ->
-                % callback function may throw(eof) if it wants
-                % to stop iterating
-                AccN = F(Key, Val, parse_flags(Flags), ID, Entry, Acc)
+                PFlags = parse_flags(Flags),
+                if WithPos ->
+                        F(Key, Val, PFlags, ID, Entry, Acc, NQ#iter.prev_head);
+                true ->
+                        F(Key, Val, PFlags, ID, Entry, Acc)
+                end
         end,
-        read_item(Q#iter{prev = EntryID, acc = AccN}).
+        read_item(NQ#iter{prev = EntryID, acc = AccN}, WithPos).
 
 read_entry(Q) ->
         read_head(Q, read(Q, 8)).
@@ -78,7 +88,7 @@ read_body(Q, <<Time?NI, EntryID?NI, Flags?NI, KeyCRC?NI,
         validate(Q, {Time, EntryID, Flags, Key, Val, Entry},
                 check(Key, KeyCRC), check(Val, ValCRC), End).
 
-validate(_, Ret, true, true, ?MAGIC_TAIL_B) -> Ret;
+validate(Q, Ret, true, true, ?MAGIC_TAIL_B) -> {Q, Ret};
 validate(Q, _, _, _, _) -> seek_magic(Q).
         
 check(Val, CRC) ->

@@ -109,13 +109,12 @@ extfile_write_test(Entries) ->
 
 extfile_read_test() ->
         S = now(),
-        Z = zlib:open(),
         ringo_reader:fold(fun
 
                 (<<"Bash:", BashCRC:32>>, Val, [external], ID, _, small) ->
                         {ok, Bash} = ringo_reader:read_external(
-                                "test_data", Z, Val),
-                        M = zlib:crc32(Z, Bash),
+                                "test_data", Val),
+                        M = erlang:crc32(Bash),
                         if M == BashCRC -> {big, ID};
                         true ->
                                 io:fwrite("Invalid checksum~n"),
