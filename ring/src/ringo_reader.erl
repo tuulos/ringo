@@ -35,14 +35,11 @@ fold(F, Acc0, DBName, WithPos) ->
                 read_item(#iter{db = DB, f = F, prev = {0, 0}, skipbad = true,
                         prev_head = 0, acc = Acc0}, WithPos)
         catch
-                truncated_read ->
-                        bfile:fclose(DB),
-                        Acc
-                % callback function may throw(eof) if it wants
-                % to stop iterating
                 {eof, #iter{acc = Acc}} ->
                         bfile:fclose(DB),
                         Acc;
+                % callback function may throw(eof) if it wants
+                % to stop iterating
                 {eof, Acc} ->
                         bfile:fclose(DB),
                         Acc
@@ -132,7 +129,7 @@ read(#iter{db = DB} = Q, N) ->
         % shouldn't be considered an error.
         case bfile:fread(DB, N) of
                 {ok, D} when size(D) == N -> D;
-                {ok, D} -> throw(truncated_read);
+                {ok, D} -> throw({eof, Q});
                 eof -> throw({eof, Q});
                 Error -> throw(Error)
         end.
