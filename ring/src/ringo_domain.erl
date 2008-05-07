@@ -258,7 +258,8 @@ handle_cast({put, _, _, _, _} = P, #domain{db = none,
 
 % normal case
 handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
-        full = false, id = DomainID, info = InfoPack, prevnode = Prev} = D) ->
+        full = Full, id = DomainID, info = InfoPack, prevnode = Prev} = D)
+                when Full == false; Flags == [iblock] ->
 
         EntryID = random:uniform(4294967295),
         Entry = ringo_writer:make_entry(EntryID, Key, Value, Flags),
@@ -580,7 +581,7 @@ open_db(#domain{home = Home, dbname = DBName} = D) ->
                 _ -> false
         end,
         InfoFile = filename:join(Home, "info"),
-        {ok, DB} = file:open(DBName, [append, raw]),
+        {ok, DB} = bfile:fopen(DBName, "a"),
         {ok, Nfo} = file:script(InfoFile),
         D#domain{db = DB, size = domain_size(Home),
                  full = Full, info = Nfo}.
@@ -659,10 +660,12 @@ open_or_clone(Req, From, D) ->
 % believe that the caller has a good reason for that and perform write normally.
 do_write(Entry, #domain{home = Home, db = DB, full = true} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
+        bfile:fflush(DB),
         D;
 
 do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
+        bfile:fflush(DB),
         S = size(Entry) + Size,
         if S > ?DOMAIN_CHUNK_MAX ->
                 close_domain(Home, DB),
@@ -672,7 +675,7 @@ do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
         end.   
 
 close_domain(Home, DB) ->
-        ok = file:sync(DB),
+        ok = bfile:fclose(DB),
         CFile = filename:join(Home, "closed"),
         ok = file:write_file(CFile, <<>>), 
         ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).
@@ -691,7 +694,7 @@ stats_buffer_add(Stats, Key, Value) ->
 
 terminate(_Reason, #domain{db = none}) -> {};
 terminate(_Reason, #domain{db = DB}) ->
-        file:close(DB).
+        bfile:fclose(DB).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 

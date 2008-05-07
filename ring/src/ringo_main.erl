@@ -39,6 +39,7 @@ start(_Type, _Args) ->
 
 init([Home, Id]) -> 
         error_logger:info_report([{"RINGO NODE", Id, "BOOTS"}]),
+        bfile:load_driver(),
         {ok, {{one_for_one, ?MAX_R, ?MAX_T},
                  [{ringo_node, {ringo_node, start_link, [Home, Id]},
                         permanent, 10, worker, dynamic}]

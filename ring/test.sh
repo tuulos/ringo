@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function run {
-        erl -pa ../ebin -noshell -run $@
+        erl -pa ../bfile/ebin -pa ../ebin -noshell -run bfile load_driver -run $@
         echo
 }
 
@@ -63,13 +63,18 @@ run test_sync order_test 1000
 fi
 
 if [[ -z $1 || $1 == "index" ]]; then
+echo "*** Build index test ***"
 run test_index buildindex_test 10000000
 run test_index buildindex_test 1000
 run test_index buildindex_test 10
+echo "*** Key-value segment encoding/decoding test ***"
 run test_index kv_test
+echo "*** Iblock de/serialization test ***"
 run test_index serialize_test 10000000
 run test_index serialize_test 1000
 run test_index serialize_test 1
+echo "*** DB access test ***"
+run test_index indexuse_test 10000000
 fi
 
 cd ..

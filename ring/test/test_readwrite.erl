@@ -34,7 +34,8 @@ write_test(Entries) when is_list(Entries) ->
         write_test(list_to_integer(lists:flatten(Entries)));
 
 write_test(Entries) ->
-        {ok, DB} = file:open("test_data/data", [append, raw]),
+        %{ok, DB} = file:open("test_data/data", [append, raw]),
+        {ok, DB} = bfile:fopen("test_data/data", "a"),
         S = now(),
         lists:foreach(fun(I) ->
                 EntryID = random:uniform(4294967295),
@@ -84,10 +85,10 @@ extfile_write_test(Entries) when is_list(Entries) ->
         extfile_write_test(list_to_integer(lists:flatten(Entries)));
 
 extfile_write_test(Entries) ->
-        {ok, DB} = file:open("test_data/bigdata", [append, raw]),
+        %{ok, DB} = file:open("test_data/bigdata", [append, raw]),
         {ok, Bash} = file:read_file("/bin/bash"),
-        Z = zlib:open(),
-        BashCRC = zlib:crc32(Z, Bash),
+        {ok, DB} = bfile:fopen("test_data/bigdata", "a"),
+        BashCRC = erlang:crc32(Bash),
         S = now(),
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),

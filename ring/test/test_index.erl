@@ -1,19 +1,23 @@
 -module(test_index).
--export([buildindex_test/1, serialize_test/1, kv_test/0]).
+-export([buildindex_test/1, serialize_test/1, kv_test/0, indexuse_test/1]).
 
-write_data(Keys) ->
+write_data(NumKeys) ->
         S = now(),
-        {ok, DB} = file:open("test_data/indexdata", [write, raw]),
-        lists:foreach(fun(_) ->
+        %{ok, DB} = file:open("test_data/indexdata", [write, raw]),
+        {ok, DB} = bfile:fopen("test_data/indexdata", "w"),
+        Keys = lists:map(fun(_) ->
                 EntryID = random:uniform(4294967295),
-                N = random:uniform(Keys),
-                Entry = ringo_writer:make_entry(EntryID, <<"KeyYek:", N:32>>,
+                N = random:uniform(NumKeys),
+                Key = <<"KeyYek:", N:32>>,
+                Entry = ringo_writer:make_entry(EntryID, Key,
                                 <<"ValueEulav:", N:32>>, []),
-                ok = ringo_writer:write_entry("test_data", DB, Entry)
+                ok = ringo_writer:write_entry("test_data", DB, Entry),
+                Key
         end, lists:seq(1, 10000)),
         io:fwrite("Writing ~b items (max key ~b) took ~bms~n",
-                [10000, Keys, round(timer:now_diff(now(), S) / 1000)]),
-        file:close(DB).
+                [10000, NumKeys, round(timer:now_diff(now(), S) / 1000)]),
+        bfile:fclose(DB),
+        Keys.
 
 buildindex_test(Keys) when is_list(Keys) -> 
         buildindex_test(list_to_integer(lists:flatten(Keys)));
@@ -47,12 +51,11 @@ serialize_test(Keys) ->
         S2 = now(),
         lists:foreach(fun(ID) ->
                 %io:fwrite("ID ~b~n", [ID]),
-                {ID, _} = ringo_index:find_key(ID, Ser)
+                {ID, [_|_]} = ringo_index:find_key(ID, Ser)
         end, gb_trees:keys(Dex)),
         io:fwrite("All keys found ok in ~bms~n",
                 [round(timer:now_diff(now(), S2) / 1000)]),
         halt().
-
 
 kv_test() ->
         lists:foreach(fun(I) ->
@@ -65,3 +68,25 @@ kv_test() ->
         end, lists:seq(1, 1000)),
         io:fwrite("Binary search for all segments ok~n", []),
         halt().
+
+indexuse_test(NumKeys) when is_list(NumKeys) -> 
+        indexuse_test(list_to_integer(lists:flatten(NumKeys)));
+indexuse_test(NumKeys) ->
+        Keys = write_data(NumKeys),
+        Dex = ringo_index:build_index("test_data/indexdata"),
+        %{ok, DB} = file:open("test_data/indexdata", [read, raw, binary]),
+        {ok, DB} = bfile:fopen("test_data/indexdata", "r"),
+        Ser = iolist_to_binary(ringo_index:serialize(Dex)),
+        S = now(),
+        lists:foreach(fun(Key) ->
+                {_, Offsets} = ringo_index:find_key(Key, Ser),
+                E = [ringo_index:get_entry(DB, Key, Offs) || Offs <- Offsets],
+                [_|_] = lists:filter(fun
+                        ({_, _, _, K, _, _}) when K == Key -> true; 
+                        (ignore) -> false
+                end, E)
+        end, Keys),
+        io:fwrite("All keys read ok in ~bms~n",
+                [round(timer:now_diff(now(), S) / 1000)]),
+        halt().
+        

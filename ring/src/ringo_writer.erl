@@ -10,7 +10,7 @@ entry_size({Entry, {}}) -> iolist_size(Entry);
 entry_size({Entry, {_, Value}}) -> iolist_size(Entry) + iolist_size(Value).
 
 write_entry(_Home, DB, {Entry, {}}) ->
-        ok = file:write(DB, Entry), ok;
+        ok = bfile:fwrite(DB, Entry), ok;
 
 write_entry(Home, DB, {Entry, {ExtFile, Value}}) ->
         % Write first with a different name, rename then. This ensures that
@@ -18,13 +18,18 @@ write_entry(Home, DB, {Entry, {ExtFile, Value}}) ->
         % enabled write_file probably doesn't block and there's no way to 
         % know when the bits have actually hit the disk, other than syncing
         % every time, hence renaming wouldn't help much.
-        ok = file:write(DB, Entry),
-        ExtPath = filename:join(Home, ExtFile),
-        ok = file:write_file(ExtPath, Value), ok.
+        ok = bfile:fwrite(DB, Entry),
+        ExtPath = filename:join(Home, ExtFile ++ ".partial"),
+        ExtPathReal = filename:join(Home, ExtFile),
+        {ok, F} = bfile:fopen(ExtPath, "w"),
+        bfile:fwrite(F, Value), 
+        bfile:fclose(F),
+        file:rename(ExtPath, ExtPathReal),
+        ok.
 
 make_entry(EntryID, Key, Value, Flags)
         when is_binary(Key), is_binary(Value), size(Key) < ?KEY_MAX,
-                size(Value) < ?VAL_INTERNAL_MAX ->
+                size(Value) < ?VAL_INTERNAL_MAX, Flags =/= [iblock] ->
 
         {encode(Key, Value, EntryID, Flags), {}};
 
@@ -33,7 +38,11 @@ make_entry(EntryID, Key, Value, Flags)
         when is_binary(Key), is_binary(Value), size(Key) < ?KEY_MAX ->
         
         CRC = erlang:crc32(Value),
-        ExtFile = io_lib:format("value-~.16b-~.16b", [EntryID, CRC]),
+        ExtFile = if Flags == [iblock] ->
+                io_lib:format("~w-~.16b", [Key, CRC]);
+        true ->
+                io_lib:format("value-~.16b-~.16b", [EntryID, CRC])
+        end,
         Link = [<<CRC:32>>, ExtFile],
         {encode(Key, list_to_binary(Link), EntryID, [external|Flags]),
                 {ExtFile, Value}};
@@ -78,11 +87,6 @@ pint(V) ->
         error_logger:warning_report({"Integer overflow in ringo_codec", V}),
         throw(integer_overflow).
          
-%format_md5(MD5) ->
-%        % who said that Erlang's string handling sucks :P
-%        io_lib:format(lists:flatten(lists:duplicate(16, "~.16b")),
-%                binary_to_list(MD5)).
-
 
 
         

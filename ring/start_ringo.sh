@@ -8,6 +8,6 @@ fi
 
 ID=`basename $1`
 echo "Launching Ringo node [$ID]"
-erl -setcookie ringobingo +K true -smp on -pa ebin -pa src\
+erl -setcookie ringobingo +K true -smp on -pa bfile/ebin -pa ebin -pa src\
     -kernel error_logger "{file, \"ringo-$ID.log\"}"\
     -boot ringo -sname "ringo-$ID" -ringo ringo_home "\"$1\""

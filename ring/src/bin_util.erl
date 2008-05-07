@@ -29,12 +29,15 @@ decode_kvsegment(Seg) ->
         <<D:S/bits, _/bits>> = X,
         [{K, V} || <<K:32, V:B>> <= D].
 
-find_kv(_, <<>>) -> none;
+%%%
+%%% Binary search for a kvsegment
+%%%
+
+find_kv(Key, <<>>) -> {Key, none};
 find_kv(Key, Seg) ->
         <<N:32, B:5, X/bits>> = Seg,
         S = N * (32 + B),
         <<D:S/bits, _/bits>> = X,
-        %io:fwrite("Dim ~b~n", [Key]),
         choose(D, Key, middle(D, 32 + B), 32 + B).
 
 middle(<<>>, _) -> none;
@@ -42,40 +45,28 @@ middle(Seg, ItemSize) ->
         N = bit_size(Seg) div ItemSize,
         P = (N div 2) * ItemSize,
         <<_:P/bits, Middle:32, _/bits>> = Seg,
-        %io:fwrite("Midle ~b ~b~n", [P,  Middle]),
         {P, Middle}.
 
-choose(<<K:32, Value/bits>> = Seg, Key, _, ItemSize)
-        when bit_size(Seg) == ItemSize, K == Key ->
-        %io:fwrite("Last~n", []),
-        S = ItemSize - 32,
-        <<V:S>> = Value,
-        {Key, V};
-
-choose(Seg, _, _, ItemSize) when bit_size(Seg) == ItemSize -> 
-        %io:fwrite("Last - not found~n", []),
-        none;
-
 choose(Seg, Key, {P, Middle}, ItemSize) when Key > Middle ->
-        %io:fwrite("Key larger: ~b > ~b~n", [Key, Middle]),
         PP = P + ItemSize,
         <<_:PP, NSeg/bits>> = Seg,
         choose(NSeg, Key, middle(NSeg, ItemSize), ItemSize);
 
 choose(Seg, Key, {P, Middle}, ItemSize) when Key < Middle ->
-        %io:fwrite("Key smaller: ~b < ~b~n", [Key, Middle]),
-        %PP = P + ItemSize,
         <<NSeg:P/bits, _/bits>> = Seg,
         choose(NSeg, Key, middle(NSeg, ItemSize), ItemSize);
 
 choose(Seg, Key, {P, _}, ItemSize) ->
-        %io:fwrite("Match: ~b~n", [Key]),
         <<_:P/bits, Item:ItemSize/bits, _/bits>> = Seg,
         S = ItemSize - 32,
         <<Key:32, Value:S>> = Item,
         {Key, Value};
 
-choose(<<>>, _, _, _) -> none.
+choose(<<>>, Key, _, _) -> {Key, none}.
+
+%%%
+%%% 
+%%%
 
 pad(X) when is_binary(X) -> X;
 pad(X) ->

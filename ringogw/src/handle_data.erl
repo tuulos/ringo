@@ -1,5 +1,5 @@
 -module(handle_data).
--export([op/2, op/3, start_active_node_updater/0]).
+-export([op/2, op/3, start_active_node_updater/0, start_chunk_cache/0]).
 
 -include("ringo_store.hrl").
 
@@ -31,7 +31,7 @@ op([C|_] = Domain, Params, _Data) when is_integer(C) ->
         error_logger:info_report({"CREATE", Domain, "WITH", PParams}),
         V = proplists:is_defined(create, PParams),
         if V ->
-                {ok, DomainID} = ringo_send(Domain, 0,
+                {ok, DomainID} = ringo_send(Domain,
                         {new_domain, Domain, 0, self(), Flags}),
                 T = proplists:get_value(timeout, PParams),
                 case ringo_receive(DomainID, T) of
@@ -58,8 +58,8 @@ op([Domain, Key], Params, Value) ->
         Flags = parse_flags(PParams, ?PUT_FLAGS),
 
         % CHUNK FIX: If chunk 0 fails, try chunk C + 1 etc.
-        {ok, DomainID} = ringo_send(Domain, 0, 
-                {put, list_to_binary(Key), Value, Flags, self()}),
+        {ok, DomainID} = ringo_send(Domain, {put,
+                list_to_binary(Key), Value, Flags, self()}),
        
         T = proplists:get_value(timeout, PParams),
         case ringo_receive(DomainID, T) of
@@ -96,8 +96,8 @@ op(_, _) ->
 %%% Ringo communication
 %%%
 
-ringo_send(Domain, Chunk, Msg) ->
-        DomainID = ringo_util:domain_id(Domain, Chunk),
+ringo_send(Domain, Msg) ->
+        DomainID = get_chunk(ringo_util:domain_id(Domain, 0)),
         case ringo_util:best_matching_node(DomainID, get_active_nodes()) of
                 {ok, Node} -> 
                         error_logger:info_report(
@@ -176,4 +176,19 @@ update_active_nodes(Nodes) ->
 
 active_nodes() ->
         ringo_util:sort_nodes(ringo_util:ringo_nodes()).
+
+get_chunk(DomainID) ->
+        case ets:lookup(chunk_cache, DomainID) of
+                [] -> DomainID;
+                [{_, Chunk}] -> Chunk
+        end.
+
+set_chunk(DomainID, Chunk) ->
+        ets:insert(chunk_cache, {DomainID, Chunk}).
+
+start_chunk_cache() ->
+        {ok, spawn_link(fun() ->
+                ets:new(chunk_cache, [named_table, public]),
+                receive _ -> ok end
+        end)}.
         

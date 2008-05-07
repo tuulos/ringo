@@ -7,7 +7,8 @@ basic_tree_test(Entries) when is_list(Entries) ->
         basic_tree_test(list_to_integer(lists:flatten(Entries)));
 
 basic_tree_test(Entries) ->
-        {ok, DB} = file:open("test_data/syncdata", [append, raw]),
+        %{ok, DB} = file:open("test_data/syncdata", [append, raw]),
+        {ok, DB} = bfile:fopen("test_data/syncdata", "a"),
         lists:foreach(fun(_) ->
                 EntryID = random:uniform(4294967295),
                 Entry = ringo_writer:make_entry(EntryID, <<>>, <<>>, []),
@@ -128,7 +129,7 @@ order_test(Entries) when is_list(Entries) ->
         order_test(list_to_integer(lists:flatten(Entries)));
 
 order_test(NEntries) ->
-        {ok, DB1} = file:open("test_data/orderdata1", [raw, append]),
+        {ok, DB1} = bfile:fopen("test_data/orderdata1", "a"),
         
         {_, Entries} = lists:unzip(lists:sort(lists:map(fun(_) ->
                 EntryID = random:uniform(4294967295),
@@ -136,13 +137,13 @@ order_test(NEntries) ->
                 ok = ringo_writer:write_entry("test_data", DB1, Entry),
                 {random:uniform(NEntries), Entry}
         end, lists:seq(1, NEntries)))),
-        file:close(DB1),
+        bfile:fclose(DB1),
 
-        {ok, DB2} = file:open("test_data/orderdata2", [raw, append]),
+        {ok, DB2} = bfile:fopen("test_data/orderdata2", "a"),
         lists:foreach(fun(Entry) ->
                 ok = ringo_writer:write_entry("test_data", DB2, Entry)
         end, Entries),
-        file:close(DB2),
+        bfile:fclose(DB2),
         
         {LeafHashes1, _} = ringo_sync:make_leaf_hashes_and_ids(
                 "test_data/orderdata1"),
