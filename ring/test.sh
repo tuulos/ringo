@@ -11,7 +11,7 @@ echo "Compiling tests.."
 #erlc +native +"{hipe, [o3]}" -o ebin src/ringo_writer.erl src/ringo_reader.erl
 erlc -I src/ -o test test/*.erl
 erlc +native +"{hipe, [o3]}"  -o ebin src/ringo_writer.erl src/ringo_reader.erl\
-             src/trunc_io.erl src/ringo_sync.erl\
+             src/trunc_io.erl src/ringo_sync.erl src/lrucache.erl\
              src/ringo_index.erl src/bin_util.erl
 echo
 
@@ -75,6 +75,8 @@ run test_index serialize_test 1000
 run test_index serialize_test 1
 echo "*** DB access test ***"
 run test_index indexuse_test 10000000
+echo "*** LRU cache test ***"
+run test_index lrucache_test
 fi
 
 cd ..

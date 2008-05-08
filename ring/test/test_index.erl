@@ -1,5 +1,6 @@
 -module(test_index).
 -export([buildindex_test/1, serialize_test/1, kv_test/0, indexuse_test/1]).
+-export([lrucache_test/0]).
 
 write_data(NumKeys) ->
         S = now(),
@@ -69,6 +70,42 @@ kv_test() ->
         io:fwrite("Binary search for all segments ok~n", []),
         halt().
 
+lrucache_test() ->
+        S = now(),
+        LRU = lists:foldl(fun(I, LRUx) ->
+                lrucache:update(I, LRUx)
+        end, lrucache:new(), lists:seq(1, 10000)),
+        io:fwrite("10000 items updated in ~bms~n",
+                [round(timer:now_diff(now(), S) / 1000)]),
+        
+        S0 = now(),
+        LRU0 = lists:foldl(fun(I, LRUx) ->
+                {I, LRUy} = lrucache:get_lru(LRUx), LRUy
+        end, LRU, lists:seq(1, 10000)),
+        io:fwrite("10000 lrus got in ~bms~n",
+                [round(timer:now_diff(now(), S0) / 1000)]),
+        
+        true = lrucache:is_empty(LRU0),
+        io:fwrite("is_empty() works~n", []),
+        
+        LRU1 = lists:foldl(fun(I, LRUx) ->
+                lrucache:update(I, LRUx)
+        end, lrucache:new(), lists:seq(1, 10000)),
+        
+        io:fwrite("Testing random access..~n", []),
+        Hits = dict:from_list([{I, true} || I <- lists:seq(1, 10000)]),
+        {Hits0, LRU2} = lists:foldl(fun(_, {Hx, LRUx}) ->
+                N = random:uniform(9000),
+                {dict:store(N, false, Hx), lrucache:update(N, LRUx)}
+        end, {Hits, LRU1}, lists:seq(1, 10000)),
+
+        lists:foldl(fun(_, LRUx) ->
+                {I, LRUy} = lrucache:get_lru(LRUx),
+                true = dict:fetch(I, Hits0), LRUy
+        end, LRU2, lists:seq(1, 1000)),
+        io:fwrite("Random access works~n", []),
+        halt().
+
 indexuse_test(NumKeys) when is_list(NumKeys) -> 
         indexuse_test(list_to_integer(lists:flatten(NumKeys)));
 indexuse_test(NumKeys) ->
@@ -80,9 +117,10 @@ indexuse_test(NumKeys) ->
         S = now(),
         lists:foreach(fun(Key) ->
                 {_, Offsets} = ringo_index:find_key(Key, Ser),
-                E = [ringo_index:get_entry(DB, Key, Offs) || Offs <- Offsets],
+                E = [ringo_index:fetch_entry(DB, "test_data", Key, Offs)
+                        || Offs <- Offsets],
                 [_|_] = lists:filter(fun
-                        ({_, _, _, K, _, _}) when K == Key -> true; 
+                        ({_, K, _}) when K == Key -> true; 
                         (ignore) -> false
                 end, E)
         end, Keys),
