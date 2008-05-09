@@ -1,7 +1,7 @@
 -module(ringo_reader).
 
--export([fold/3, fold/4, read_entry/2, is_external/1, decode/1]).
--export([read_external/2, parse_flags/1]).
+-export([fold/3, fold/5, read_entry/2, is_external/1, decode/1]).
+-export([read_external/2, parse_flags/1, read_file/1]).
 -include("ringo_store.hrl").
 
 -define(NI, :32/little).
@@ -27,13 +27,17 @@ decode(<<?MAGIC_HEAD?NI, _HeadCRC?NI, Time?NI, EntryID?NI, FlagsB?NI,
         {Time, EntryID, Flags, Key, Value}.
 
 fold(F, Acc0, DBName) ->
-        fold(F, Acc0, DBName, false).
+        fold(F, Acc0, DBName, false, 0).
 
-fold(F, Acc0, DBName, WithPos) ->
+fold(F, Acc0, DBName, WithPos, StartPos) ->
         {ok, DB} = bfile:fopen(DBName, "r"),
+        if StartPos > 0 ->
+                ok = bfile:fseek(DB, StartPos, seek_set);
+        true -> ok
+        end,
         try
                 read_item(#iter{db = DB, f = F, prev = {0, 0}, skipbad = true,
-                        prev_head = 0, acc = Acc0}, WithPos)
+                        prev_head = StartPos, acc = Acc0}, WithPos)
         catch
                 {eof, #iter{acc = Acc}} ->
                         bfile:fclose(DB),
@@ -51,8 +55,7 @@ read_item(#iter{f = F, prev = Prev, acc = Acc} = Q, WithPos) ->
         % skip duplicate items
         AccN = if Prev == EntryID -> Acc;
         % skip iblocks
-        Flags band ?IBLOCK_FLAG =/= 0 ->
-                Acc;
+        ?FLAG_UP(Flags, ?IBLOCK_FLAG) -> Acc;
         true ->
                 PFlags = parse_flags(Flags),
                 if WithPos ->
@@ -129,7 +132,7 @@ read(#iter{db = DB} = Q, N) ->
         % shouldn't be considered an error.
         case bfile:fread(DB, N) of
                 {ok, D} when size(D) == N -> D;
-                {ok, D} -> throw({eof, Q});
+                {ok, _} -> throw({eof, Q});
                 eof -> throw({eof, Q});
                 Error -> throw(Error)
         end.
@@ -144,11 +147,11 @@ read(#iter{db = DB} = Q, N) ->
 parse_flags(Flags) ->
         [S || {S, F} <- ?FLAGS, Flags band F > 0].
 
-read_external(Home, <<CRC:32, ExtFile/binary>>) ->
+read_external(Home, <<_CRC:32, ExtFile/binary>>) ->
         ExtPath = filename:join(Home, binary_to_list(ExtFile)),
         case read_file(ExtPath) of
                 {error, Reason} -> {io_error, Reason};
-                {ok, Value} = R -> R
+                {ok, _Value} = R -> R
                         %V = erlang:crc32(Value),
                         %if V == CRC -> {ok, Value};
                         %true -> corrupted_file

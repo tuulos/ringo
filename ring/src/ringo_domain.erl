@@ -91,11 +91,6 @@ start(Home, DomainID, IsOwner, Prev, Next) ->
                 {error, {already_started, Server}} -> {ok, Server}
         end.
 
-get_iparam(Name, Default) ->
-        case os:getenv(Name) of
-                false -> Default;
-                Value -> list_to_integer(Value)
-        end.
 
 init([Home, DomainID, IsOwner, Prev, Next]) ->
         error_logger:info_report({"Domain opens", DomainID, IsOwner}),
@@ -129,7 +124,8 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
                      stats = Stats,
                      prevnode = Prev,
                      nextnode = Next,
-                     extproc = ExtProc
+                     extproc = ExtProc,
+                     index = none
                 },
 
         Domain = case catch open_domain(D0) of
@@ -143,9 +139,12 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         
         ets:insert(Stats, {started, ringo_util:format_timestamp(now())}),
 
-        ResyncInt = get_iparam("RESYNC_INTERVAL", ?RESYNC_INTERVAL),
-        GlobalInt = get_iparam("GLOBAL_INTERVAL", ?GLOBAL_RESYNC_INTERVAL),
-        ExtInt = get_iparam("CHECK_EXT_INTERVAL", ?CHECK_EXTERNAL_INTERVAL),
+        ResyncInt = ringo_util:get_iparam(
+                "RESYNC_INTERVAL", ?RESYNC_INTERVAL),
+        GlobalInt = ringo_util:get_iparam(
+                "GLOBAL_INTERVAL", ?GLOBAL_RESYNC_INTERVAL),
+        ExtInt = ringo_util:get_iparam(
+                "CHECK_EXT_INTERVAL", ?CHECK_EXTERNAL_INTERVAL),
         
         RTime = round(ResyncInt + random:uniform(ResyncInt * 0.5)),
         if IsOwner ->
@@ -235,6 +234,11 @@ handle_cast({new_domain, Name, Chunk, From, Params},
                         {noreply, NewD}
         end;
 
+%%%
+%%% Put
+%%%
+
+
 % DB not open: There may be two reasons for this:
 %
 % 1) Domain doesn't exists
@@ -256,19 +260,30 @@ handle_cast({put, _, _, _, _} = P, #domain{db = none,
                 {redir_put, node(), 1, P}}),
         {noreply, D};
 
+% Index is opened lazily: Now it's the time unless index is already open.
+handle_cast({put, _, _, _, _} = P, #domain{index = none, home = Home, 
+        owner = true, dbname = DBName, info = InfoPack} = D) ->
+
+        {ok, S} = ringo_indexdomain:start_link(self(), Home, DBName, InfoPack),
+        handle_cast(P, D#domain{index = S});
+
 % normal case
-handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
-        full = Full, id = DomainID, info = InfoPack, prevnode = Prev} = D)
-                when Full == false; Flags == [iblock] ->
+handle_cast({put, Key, Value, Flags, From}, #domain{owner = true, 
+        index = Index, full = Full, id = DomainID, info = InfoPack, db = DB,
+        prevnode = Prev} = D) when Full == false; Flags == [iblock] ->
 
         EntryID = random:uniform(4294967295),
         Entry = ringo_writer:make_entry(EntryID, Key, Value, Flags),
         From ! {ringo_reply, DomainID, {ok, {node(), EntryID}}},
-        
+       
+        {ok, Pos} = bfile:ftell(DB),
         NewD = do_write(Entry, D),
 
-        Nrepl = proplists:get_value(nrepl, InfoPack),
-        DServer = self(),
+        % Don't index index blocks
+        if Flags =/= [iblock] ->
+                gen_server:cast(Index, {put, Key, Pos, Pos + size(Entry)});
+        true -> ok
+        end,
 
         % See replicate_proc for different replication policies. Currently
         % performing replication in another process is unsafe, since it 
@@ -279,6 +294,8 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
         % Currently the safest approach,
         % in resyncing point of view, is to do opportunistic replication (no
         % re-sends) in a serialized manner (i.e. no spawning).
+        Nrepl = proplists:get_value(nrepl, InfoPack),
+        DServer = self(),
         replicate({DServer, DomainID, EntryID, Entry, Nrepl}, Prev, 0),
 
         %spawn(fun() -> replicate_proc(
@@ -297,13 +314,9 @@ handle_cast({put, _, _, _, From},
 %%% Redirected put
 %%%
 
-% Prevent infinite loops
-handle_cast({redir_put, _, N, _}, D) when N > ?MAX_RING_SIZE ->
-        {noreply, D};
-
-% Request came back to the owner -> domain doesn't exist
-handle_cast({redir_put, Owner, _, {put, _, _, _, From}},
-        #domain{id = DomainID} = D) when Owner == node() ->
+% Request came back to the owner or an infinite loop -> domain doesn't exist
+handle_cast({redir_put, Owner, N, {put, _, _, _, From}},
+        #domain{id = DomainID} = D) when Owner == node(); N > ?MAX_RING_SIZE ->
 
         From ! {ringo_reply, DomainID, {error, invalid_domain}},
         {noreply, D};
@@ -331,6 +344,47 @@ handle_cast({redir_put, _, _, {put, _, _, _, From}},
         From ! {ringo_reply, DomainID, {error, domain_full}},
         {noreply, D};
 
+%%%
+%%% Get
+%%%
+
+% DB not open: Check the corresponding put-request for more information.
+% Redirect request to the previous node.
+handle_cast({get, Key, From}, #domain{owner = true, id = DomainID, db = none, 
+                prevnode = Prev} = D) ->
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                {get, Key, From, node(), 1}}),
+        {noreply, D};
+
+% Index not open: Now it's time to open it.
+handle_cast({get, _, _} = P, #domain{index = none, home = Home,
+        dbname = DBName, info = InfoPack} = D) ->
+
+        {ok, S} = ringo_indexdomain:start_link(self(), Home, DBName, InfoPack),
+        handle_cast(P, D#domain{index = S});
+
+% Normal case
+handle_cast({get, Key, From}, #domain{index = Index} = D) ->
+        gen_server:cast(Index, {get, Key, From}),
+        {noreply, D};
+
+% Redirected get: Came back to the originator, or stuck in an infinite loop.
+handle_cast({get, _, From, Node, N}, #domain{id = DomainID} = D)
+        when Node == node(); N > ?MAX_RING_SIZE ->
+        From ! {ringo_reply, DomainID, {error, invalid_domain}},
+        {noreply, D};
+
+% Redirected get: DB not open -> redirect to previous.
+handle_cast({get, Key, From, Node, N}, #domain{id = DomainID, db = none,
+                prevnode = Prev} = D) ->
+        gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
+                {get, Key, From, Node, N + 1}}),
+        {noreply, D};
+
+% Redirected get: DB open, proceed as with normal get
+handle_cast({get, Key, From, _, _}, D) ->
+        handle_cast({get, Key, From}, D);
+                
 
 %%% 
 %%% Replication
@@ -521,9 +575,9 @@ handle_cast({kill_domain, Reason}, D) ->
 handle_cast({update_num_entries, N}, D) ->
         {noreply, D#domain{num_entries = N}};
 
-handle_cast(Msg, R) ->
-        error_logger:info_report({"Unknown cast", Msg}),
-        {stop, normal, R}.
+handle_cast(Msg, D) ->
+        error_logger:warning_report({"Unknown cast", Msg}),
+        {noreply, D}.
         
 %%%
 %%% Random messages
@@ -534,10 +588,24 @@ handle_cast(Msg, R) ->
 %        {ok, NewD} = new_domain(D, Info),
 %        {noreply, NewD};
 
-handle_info({'EXIT', Pid, _}, #domain{extproc = Pid, home = Path} = D) ->
+handle_info({'EXIT', Pid, _}, #domain{extproc = Pid, home = Home} = D) ->
         error_logger:info_report("ringo_external dies, respawning it"),
-        ExtProc = spawn_link(ringo_external, fetch_external, [Path]),
+        ExtProc = spawn_link(ringo_external, fetch_external, [Home]),
         {noreply, D#domain{extproc = ExtProc}};
+
+handle_info({'EXIT', Pid, _}, #domain{index = Pid} = D) ->
+        
+        % Why not to respawn index here similarly to ringo_external above?
+        % Ringo_indexdomain does pretty heavy stuff during initialization, so
+        % it might well crash right there. If we respawn it as soon as it
+        % crashes, we might end up in a busy-loop, kicking a dead horse. In
+        % contrast, by letting the next get / put request to respawn index,
+        % there's a slight chance that the problem has fixed itself (e.g. by
+        % resycing) by that time, or at least we end up kicking the horse less
+        % ferociously.
+        error_logger:info_report(
+                "index dies, next get/put request will respawn it"),
+        {noreply, D#domain{index = none}};
 
 handle_info({'DOWN', _, _, _, _}, R) ->
         error_logger:info_report("Ringo_node down, domain dies too"),

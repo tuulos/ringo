@@ -2,7 +2,11 @@
 -export([new/0, update/2, is_empty/1, get_lru/1]).
 
 %%%
-%%% Thanks to Heli Tuulos for this beautiful design of LRU cache.
+%%% Thanks to Heli Tuulos for this beautiful design of LRU cache:
+%%% Cache is a double-linked list providing constant-time access to entries
+%%% via a dictionary. The LRU item is always the head and can be retrieved
+%%% with get_lru(). Accessing an item moves it to to the tail (update()).
+%%%
 %%% This implementation is based on the dict module to avoid copying
 %%% of large binary keys, as would happen with ets.
 %%%

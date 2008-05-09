@@ -1,16 +1,18 @@
 -module(ringo_index).
--export([build_index/1, fetch_entry/4, new_dex/0, add_item/3, serialize/1]).
+-export([build_index/3, fetch_entry/4, new_dex/0, add_item/3, serialize/1]).
 -export([dexhash/1, find_key/2, find_key/3, decode_poslist/1]).
 
 -include("ringo_store.hrl").
 
 % overwrite flag: index only the newest instance of this key
 
-build_index(DBName) ->
-        ringo_reader:fold(
-        fun(Key, _, _Flags, _, _, Dex, Pos) ->
-                add_item(Dex, Key, Pos)
-        end, new_dex(), DBName, true).
+build_index(DBName, StartPos, Num) ->
+        ringo_reader:fold(fun
+                (_, _, _, _, _, {N, _, _} = A, _) when N == Num ->
+                        throw({eof, A});
+                (Key, _, _Flags, _, Entry, {N, Dex, _}, Pos) ->
+                        {N + 1, add_item(Dex, Key, Pos), Pos + size(Entry)}
+        end, {0, new_dex(), 0}, DBName, true, StartPos).
 
 fetch_entry(DB, Home, Key, Offset) ->
         case ringo_reader:read_entry(DB, Offset) of

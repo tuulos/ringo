@@ -26,7 +26,7 @@ buildindex_test(Keys) when is_list(Keys) ->
 buildindex_test(Keys) ->
         write_data(Keys),
         S = now(),
-        Dex = ringo_index:build_index("test_data/indexdata"),
+        {_, Dex, _} = ringo_index:build_index("test_data/indexdata", 0, inf),
         Ser = ringo_index:serialize(Dex),
         {memory, Mem} = erlang:process_info(self(), memory),
         io:fwrite("Building index took ~bms~n",
@@ -42,7 +42,7 @@ serialize_test(Keys) when is_list(Keys) ->
 
 serialize_test(Keys) ->
         write_data(Keys),
-        Dex = ringo_index:build_index("test_data/indexdata"),
+        {_, Dex, _} = ringo_index:build_index("test_data/indexdata", 0, inf),
         S = now(),
         Ser = iolist_to_binary(ringo_index:serialize(Dex)),
         io:fwrite("Serialization took ~bms~n",
@@ -110,7 +110,7 @@ indexuse_test(NumKeys) when is_list(NumKeys) ->
         indexuse_test(list_to_integer(lists:flatten(NumKeys)));
 indexuse_test(NumKeys) ->
         Keys = write_data(NumKeys),
-        Dex = ringo_index:build_index("test_data/indexdata"),
+        {_, Dex, _} = ringo_index:build_index("test_data/indexdata", 0, inf),
         %{ok, DB} = file:open("test_data/indexdata", [read, raw, binary]),
         {ok, DB} = bfile:fopen("test_data/indexdata", "r"),
         Ser = iolist_to_binary(ringo_index:serialize(Dex)),
