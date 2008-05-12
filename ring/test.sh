@@ -6,13 +6,23 @@ function run {
 }
 
 echo
-echo "Compiling tests.."
 #erlc +native +"{hipe, [o3]}" -I src/ -o test test/*.erl
 #erlc +native +"{hipe, [o3]}" -o ebin src/ringo_writer.erl src/ringo_reader.erl
 erlc -I src/ -o test test/*.erl
-erlc +native +"{hipe, [o3]}"  -o ebin src/ringo_writer.erl src/ringo_reader.erl\
-             src/trunc_io.erl src/ringo_sync.erl src/lrucache.erl\
-             src/ringo_index.erl src/bin_util.erl
+
+SRC="src/ringo_writer.erl src/ringo_reader.erl\
+     src/trunc_io.erl src/ringo_sync.erl src/lrucache.erl\
+     src/ringo_index.erl src/bin_util.erl"
+
+if [[ -z $BEAM ]]; then
+	echo "Compiling tests.. (Hipe)"
+	erlc +native +"{hipe, [o3]}" -o ebin $SRC
+
+else
+	echo "Compiling tests.."
+	erlc -o ebin $SRC
+fi
+
 echo
 
 rm -Rf test/test_data

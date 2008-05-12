@@ -8,7 +8,7 @@ codec_test() ->
         EntryID = random:uniform(4294967295),
         Key = <<"dssdwe1we1234124e">>,
         Val = <<"dssddsaswqe-">>,
-        Flags = [overwrite],
+        Flags = [],
         
         io:fwrite("Encoding / decoding internal entry..~n", []),
         {Ent1, _} = ringo_writer:make_entry(EntryID, Key, Val, Flags),
