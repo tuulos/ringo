@@ -28,7 +28,8 @@ class DecodeJson:
 class DecodeMulti:
         def __init__(self, cb = None):
                 if not cb:
-                        self.cb = lambda e, out: out.append(e)
+                        cb = lambda e, out: out.append(e)
+                self.cb = cb
                 self.buf = ""
                 self.ret = "ok"
                 self.out = []
@@ -50,7 +51,7 @@ class DecodeMulti:
                                         # Wait for more data
                                         break
                         # State 2: Read body, if available
-                        elif len(self.buf) > self.entrylen:
+                        elif len(self.buf) >= self.entrylen:
                                 r = self.cb(self.buf[:self.entrylen], self.out)
                                 self.buf = self.buf[self.entrylen:]
                                 self.entrylen = None
@@ -60,10 +61,10 @@ class DecodeMulti:
 
         def output(self):
                 if self.buf:
-                        raise ValueException("%d extra bytes in the stream" %
+                        raise ReplyException("%d extra bytes in the stream" %
                                 len(self.buf))
                 else:
-                        return self.ret, self.output
+                        return self.ret, self.out
 
 def sethost(url):
         global host
@@ -78,7 +79,7 @@ def check_reply(reply):
                 e.retcode = reply[0]
                 e.retvalue = reply[1]
                 raise e 
-        return reply[1][2:]
+        return reply[1][1:]
 
 def create(domain, nrepl, **kwargs):
         kwargs['decoder'] = DecodeJson
@@ -96,7 +97,6 @@ def get(domain, key, **kwargs):
         if 'single' in kwargs:
                 kwargs['decoder'] = DecodeRaw
                 del kwargs['single']
-                print "URL", url
                 code, val = request(url + "?single", **kwargs)
                 if code != 200:
                         e = ReplyException("Invalid reply (code: %d)" % code)
@@ -104,8 +104,13 @@ def get(domain, key, **kwargs):
                         raise e
                 return val
         else:
-                kwargs['decoder'] = DecodeMulti
-                return check_reply(request(url, **kwargs))
+                if 'entry_callback' in kwargs:
+                        cb = kwargs['entry_callback']
+                        kwargs['decoder'] = lambda: DecodeMulti(cb)
+                        del kwargs['entry_callback']
+                else:
+                        kwargs['decoder'] = DecodeMulti
+                return check_reply(request(url, **kwargs))[0]
 
 
 # Although Curl's documentation suggests re-using a curl object for

@@ -11,7 +11,7 @@
 
 -define(PUT_DEFAULTS, [{i, "timeout", "1000"}]).
 -define(PUT_FLAGS, []).
--define(GET_DEFAULTS, [{i, "timeout", "1000"}]).
+-define(GET_DEFAULTS, [{i, "timeout", "1000"}, {b, "single", false}]).
 -define(GET_FLAGS, []).
 
 % FIXME: What happens when we send a request to a node that doesn't have a 
@@ -38,8 +38,7 @@ op([C|_] = Domain, Params, _Data) when is_integer(C) ->
                 T = proplists:get_value(timeout, PParams),
                 case ringo_receive(DomainID, T) of
                         {ok, {Node, _Pid}} ->
-                                {json, {ok, <<"domain created">>,
-                                        {Node, formatid(DomainID)}}};
+                                {json, {ok, {Node, formatid(DomainID)}}};
                         {error, eexist} ->
                                 {json, {error, <<"domain already exists">>}};
                         Error ->
@@ -66,8 +65,8 @@ op([Domain, Key], Params, Value) ->
         T = proplists:get_value(timeout, PParams),
         case ringo_receive(DomainID, T) of
                 {ok, {Node, EntryID}} ->
-                        {json, {ok, <<"put ok">>, Node,
-                                formatid(DomainID), formatid(EntryID)}};
+                        {json, {ok, Node, formatid(DomainID),
+                                formatid(EntryID)}};
                 {error, invalid_domain} ->
                         {json, {error, <<"Domain doesn't exist">>}};
                 {error, domain_full} ->
@@ -94,22 +93,15 @@ op(_, _, _) ->
 % prefix, which makes it possible to view the value directly in the browser.
 % (Consider supporting different mime-types, given a proper parameter).
 op([Domain, Key], Params) ->
-        error_logger:info_report({"CP 1", Params}),
-        PParams = parse_params(Params, ?PUT_DEFAULTS),
-        error_logger:info_report({"CP 2", PParams}),
+        PParams = parse_params(Params, ?GET_DEFAULTS),
         {ok, _} = ringo_send(Domain, 
                 {get, list_to_binary(Key), self()}),
                 proplists:get_value(timeout, PParams),
-        error_logger:info_report({"CP 3"}),
         Single = proplists:get_value(single, PParams),
-        error_logger:info_report({"CP 4"}),
         T = proplists:get_value(timeout, PParams),
-        error_logger:info_report({"CP 5"}),
         if Single ->
-                error_logger:info_report({"CP 6"}),
                 ringo_receive_chunked(single, T);
         true ->
-                error_logger:info_report({"CP 7"}),
                 ringo_receive_chunked(many, T)
         end;
 
@@ -140,7 +132,6 @@ ringo_receive_chunked(Mode, Timeout) when Timeout > 10000 ->
 ringo_receive_chunked(single, Timeout) ->
         receive
                 {entry, E} ->
-                        error_logger:info_report({"CP 8"}),
                         {data, E}
         after Timeout ->
                 throw({http_error, 408, <<"Request timeout">>})

@@ -8,8 +8,6 @@ conn = None
 os.environ['RESYNC_INTERVAL'] = '10000'
 os.environ['CHECK_EXT_INTERVAL'] = '10000'
 
-class ReplyException(Exception):
-        pass
 
 def new_node(id = None):
         global node_id
@@ -33,15 +31,6 @@ def domain_id(name, chunk):
 def make_domain_id(did):
         return hex(did)[2:-1]
 
-def check_reply(reply):
-        if reply[0] != 200 or reply[1][0] != 'ok':
-                e = ReplyException("Invalid reply (code: %d): %s" %\
-                        (reply[0], reply[1]))
-                e.retcode = reply[0]
-                e.retvalue = reply[1]
-                raise e 
-        return reply[1][2:]
-
 def check_entries(r, nrepl, nentries):
         if r[0] != 200:
                 return False
@@ -52,7 +41,6 @@ def check_entries(r, nrepl, nentries):
         roots = []
         for node in r[1][3]:
                 num = node["num_entries"]
-                #print "NUM", num, nentries
                 if num == "undefined" or int(num) != nentries:
                         return False
                 root = -1
@@ -62,7 +50,6 @@ def check_entries(r, nrepl, nentries):
                 if node["owner"]:
                         owner_root = root
 
-        #print "ROOT", owner_root, "ROOTS", roots
         if len(roots) != nrepl:
                 return False
 
@@ -85,7 +72,7 @@ def _test_ring(n, num = None, nodeids = []):
         if nodeids:
                 n = len(nodeids)
 
-        print "Launching nodes"
+        print "Launching nodes",
         res = []
         for i in range(n):
                 time.sleep(1)
@@ -116,15 +103,14 @@ def _wait_until(req, check, timeout):
 def _put_entries(name, nitems, retries = 0):
         t = time.time()
         for i in range(nitems):
-                check_reply(ringogw.request("/mon/data/%s/item-%d" % (name, i),
-                        "testitem-%d" % i, retries = retries))
+                ringogw.put(name, "item-%d" % i, "testitem-%d" % i,
+                        retries = retries)
         print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
 
 def _test_repl(name, n, nrepl, nitems, create_ring = True):
         if create_ring and not _test_ring(n):
                 return False
-        node, domainid = check_reply(ringogw.request(
-                "/mon/data/%s?create&nrepl=%d" % (name, nrepl), ""))[0]
+        node, domainid = ringogw.create(name, nrepl)
         _put_entries(name, nitems)
         return _wait_until("/mon/domains/domain?id=0x" + domainid,
                 lambda x: check_entries(x, n, nitems), 50)
@@ -251,8 +237,7 @@ def test09_killowner():
                 return False
 
         print "Create and populate domain"
-        node, domainid = check_reply(
-                ringogw.request("/mon/data/killowner?create&nrepl=5", ""))[0]
+        node, domainid = ringogw.create("killowner", 5)
         _put_entries("killowner", 50)
         
         kill_id = node.split('@')[0].split("-")[1]
@@ -339,9 +324,7 @@ def test11_simcodeupdate():
                         k = "item-%d" % i
                         v = "testitem-%d" % i
                         for name in names:
-                                check_reply(ringogw.request(
-                                        "/mon/data/%s/%s" % (name, k), v,
-                                                retries = 10))
+                                ringogw.put(name, k, v, retries = 10)
                                         
         did1 = int(domain_id(names[0], 0), 16)
         did2 = int(domain_id(names[1], 0), 16)
@@ -354,8 +337,7 @@ def test11_simcodeupdate():
         print "Creating domains.."
 
         for name in names:
-                check_reply(ringogw.request(
-                        "/mon/data/%s?create&nrepl=6" % name, ""))
+                ringogw.create(name, 6)
 
         print "Restarting nodes one at time:"
         for id in ids:
@@ -391,14 +373,12 @@ def test12_extsync():
         if not _test_ring(5):
                 return False
         
-        node, domainid = check_reply(ringogw.request(
-                "/mon/data/extsync?create&nrepl=6", ""))[0]
+        node, domainid = ringogw.create("extsync", 6)
                 
         v = "!" * 1024**2
         print "Putting ten 1M values"
         for i in range(10):
-                check_reply(ringogw.request("/mon/data/extsync/fub-%d" % i,
-                        v, verbose = True))
+                ringogw.put("extsync", "fub-%d" % i, v, verbose = True)
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
                         lambda x: x[0] == 200, 30):
                 return False
@@ -425,8 +405,7 @@ def test12_extsync():
         newid, p = new_node()
         print "Creating a new node", newid
         print "Putting an extra item (should go to the new node as well)"
-        check_reply(ringogw.request("/mon/data/extsync/extra",
-                v, verbose = True))
+        ringogw.put("extsync", "extra", v, verbose = True)
 
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
                         lambda x: check_entries(x, 6, 11), 300):
@@ -436,6 +415,41 @@ def test12_extsync():
                 if not _check_extfiles(newid, domainid, 11):
                         print "All ext files not found on node", repl 
                         return False
+        return True
+
+def test13_singleget():
+        if not _test_ring(1):
+                return False
+        
+        node, domainid = ringogw.create("basicget", 5)        
+        for i in range(5):
+                ringogw.put("basicget", "muppet-%d" % i, "nufnuf-%d" % i)
+
+        for i in range(5):
+                r = ringogw.get("basicget", "muppet-%d" % i, single = True)
+                if r != "nufnuf-%d" % i:
+                        print "Invalid reply", r
+                        return False
+        return True
+
+def test14_multiget():
+        def check_reply(entry, out):
+                if entry != "nufnuf-%d" % len(out): 
+                        raise "Invalid reply", entry
+                out.append(entry)
+
+        if not _test_ring(1):
+                return False
+        
+        node, domainid = ringogw.create("multiget", 5)
+        print "Putting 1000 items.."
+        for i in range(1000):
+                ringogw.put("multiget", "bork", "nufnuf-%d" % i)
+        
+        print "Getting 1000 items.."
+        out = ringogw.get("multiget", "bork", entry_callback = check_reply, verbose = True)
+        if len(out) != 1000:
+                raise "Invalid number of replies: %d" % len(out)
         return True
 
         
