@@ -5,13 +5,13 @@
 
 -define(ACTIVE_NODE_UPDATE, 5000).
 
--define(CREATE_DEFAULTS, [{i, "nrepl", "3"}, {i, "timeout", "1000"}, 
-        {b, "create", false}]).
--define(CREATE_FLAGS, [nrepl]).
+-define(CREATE_DEFAULTS, [{i, "nrepl", "3"}, {i, "timeout", "10000"}, 
+        {b, "create", false}, {b, "keycache", false}, {b, "noindex", false}]).
+-define(CREATE_FLAGS, [nrepl, keycache, noindex]).
 
--define(PUT_DEFAULTS, [{i, "timeout", "1000"}]).
+-define(PUT_DEFAULTS, [{i, "timeout", "10000"}]).
 -define(PUT_FLAGS, []).
--define(GET_DEFAULTS, [{i, "timeout", "1000"}, {b, "single", false}]).
+-define(GET_DEFAULTS, [{i, "timeout", "30000"}, {b, "single", false}]).
 -define(GET_FLAGS, []).
 
 % FIXME: What happens when we send a request to a node that doesn't have a 
@@ -116,8 +116,6 @@ ringo_send(Domain, Msg) ->
         DomainID = get_chunk(ringo_util:domain_id(Domain, 0)),
         case ringo_util:best_matching_node(DomainID, get_active_nodes()) of
                 {ok, Node} -> 
-                        error_logger:info_report(
-                                {"DOMAIN", DomainID, "BEST NODE", Node}),
                         gen_server:cast({ringo_node, Node}, {match, 
                                 DomainID, domain, self(), Msg});
                 {error, no_nodes} ->
@@ -126,8 +124,8 @@ ringo_send(Domain, Msg) ->
         end,
         {ok, DomainID}.
 
-ringo_receive_chunked(Mode, Timeout) when Timeout > 10000 ->
-        ringo_receive_chunked(Mode, Timeout);
+ringo_receive_chunked(Mode, Timeout) when Timeout > 60000 ->
+        ringo_receive_chunked(Mode, 60000);
 
 ringo_receive_chunked(single, Timeout) ->
         receive
@@ -146,8 +144,8 @@ ringo_receive_chunked(many, Timeout) ->
                 end
         end}.
 
-ringo_receive(DomainID, Timeout) when Timeout > 10000 ->
-        ringo_receive(DomainID, 10000);
+ringo_receive(DomainID, Timeout) when Timeout > 60000 ->
+        ringo_receive(DomainID, 60000);
 
 ringo_receive(DomainID, Timeout) ->
         receive

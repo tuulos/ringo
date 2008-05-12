@@ -83,8 +83,14 @@ def check_reply(reply):
 
 def create(domain, nrepl, **kwargs):
         kwargs['decoder'] = DecodeJson
-        return check_reply(request("/mon/data/%s?create&nrepl=%d" %
-                (domain, nrepl), "", **kwargs))[0]
+        url = "/mon/data/%s?create&nrepl=%d" % (domain, nrepl)
+        if 'noindex' in kwargs:
+                url += "&noindex=1"
+                del kwargs['noindex']
+        if 'keycache' in kwargs:
+                url += "&keycache=1"
+                del kwargs['keycache']
+        return check_reply(request(url, "", **kwargs))[0]
 
 def put(domain, key, value, **kwargs):
         kwargs['decoder'] = DecodeJson
@@ -118,8 +124,8 @@ def get(domain, key, **kwargs):
 # The first request is fast but requests after that are not (except 
 # some requests occasionally with the lighttpd/scgi combination). Weird.
 # TODO: Check whether TCP_NODELAY could help.
-def request(url, data = None, verbose = False,
-            keep_alive = False, retries = 0, decoder = DecodeJson):
+def request(url, data = None, verbose = False, keep_alive = True, 
+        retries = 0, decoder = DecodeJson):
         global curl
         if url.startswith("http://"):
                 purl = url

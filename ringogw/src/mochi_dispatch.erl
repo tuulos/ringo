@@ -12,6 +12,7 @@ request(Req) ->
         {ok, Dyn} = application:get_env(dynroot),
         {ok, Doc} = application:get_env(docroot),
         P = Req:get(path),
+        inet:setopts(Req:get(socket), [{nodelay, true}]),
         case string:tokens(P, "/") of
                 [Dyn, N, Script] -> serve_dynamic(Req, N, Script);
                 [Dyn, N, Script|R] -> serve_dynamic(Req, N, [Script|R]);

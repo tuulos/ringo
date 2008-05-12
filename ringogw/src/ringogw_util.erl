@@ -21,7 +21,5 @@ chunked_reply(Sender, ReplyGen) ->
 % last chunk
 encode_chunk(done) -> <<"0\r\n\r\n">>.
 encode_chunk(Data, Code) ->
-        error_logger:info_report({"Dum", Data}),
         Prefixed = [io_lib:format("~b ", [size(Data)]), Code, " ", Data],
-        error_logger:info_report({"E", iolist_size}),
         [io_lib:format("~.16b\r\n", [iolist_size(Prefixed)]),  Prefixed, "\r\n"].

@@ -203,15 +203,11 @@ handle_cast({match, ReqID, Op, From, Args} = Req, #rnode{route = {_, Ring},
         prevnode = Prev, nextnode = Next, home = Home} = R) when Ring =/= [] ->
         
         Match = ringo_util:match(ReqID, R),
-        error_logger:info_report({"Match", [Match, Op]}),
         if Match, Op == domain ->
-                error_logger:info_report({"Match: domain operation"}),
                 domain_dispatch(Home, ReqID, true, Prev, Next, Args);
         Match ->
-                error_logger:info_report({"Match: node operation"}),
                 spawn_link(fun() -> op(Op, Args, From, ReqID, R) end);
         true ->
-                error_logger:info_report({"Forwarding to next node"}),
                 gen_server:cast({ringo_node, R#rnode.nextnode}, Req)
         end,
         {noreply, R};

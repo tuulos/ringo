@@ -39,7 +39,7 @@ make_entry(EntryID, Key, Value, Flags)
         
         CRC = erlang:crc32(Value),
         ExtFile = if Flags == [iblock] ->
-                io_lib:format("~w", [Key]);
+                binary_to_list(Key);
         true ->
                 io_lib:format("value-~.16b-~.16b", [EntryID, CRC])
         end,

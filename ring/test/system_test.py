@@ -452,6 +452,57 @@ def test14_multiget():
                 raise "Invalid number of replies: %d" % len(out)
         return True
 
+def _cache_test(**kwargs):
+        def check_values(key, ret):
+                for i, v in enumerate(ret):
+                        if v != key + "-pie-%d" % i:
+                                raise "Invalid results: Key <%s>: %s"\
+                                        % (key, r)
+
+        if not _test_ring(1):
+                return False
+        
+        node, domainid = ringogw.create("cachetest", 5, **kwargs)
+        print "Putting 100500 items.."
+        t = time.time()
+        keys = []
+        for i in range(10050):
+                key = "pumpkin-%d" % i
+                keys.append(key)
+                for j in range(10):
+                        ringogw.put("cachetest", key, key + "-pie-%d" % j)
+        print "items put in %dms" % ((time.time() - t) * 1000)
+
+        print "Retrieving all keys and checking values.."
+        t = time.time()
+        for key in keys:
+                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        
+        print "Getting 10000 keys in sequential order"
+        s = random.sample(keys, 100) 
+        t = time.time()
+        for i in range(10):
+                for key in s:
+                        for j in range(10):
+                                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+
+        print "Getting 10000 keys in random order"
+        t = time.time()
+        for i in range(10000):
+                key = random.choice(keys)
+                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        return True
+        
+
+def test15_iblockcache():
+        return _cache_test()
+        
+def test16_keycache():
+        return _cache_test(keycache = True)
+
         
 # 7. (100 domains) create N domains, put entries, killing random domains at the
 #        same time, check that all entries available in the end

@@ -40,11 +40,9 @@ add_item(Dex, Key, Pos) ->
         gb_trees:enter(Hash, add_pos(gb_trees:lookup(Hash, Dex), Pos), Dex).
 
 add_pos(none, Pos) ->
-        error_logger:info_report({"Enc va f", Pos}),
         {Pos, <<Pos:32>>};
 
 add_pos({value, {PrevPos, Lst}}, Pos) ->
-        error_logger:info_report({"Enc va", PrevPos, Pos}),
         {Pos, <<Lst/bits, (elias_encode(Pos - PrevPos))/bits>>}.
 
 serialize(Dex) ->

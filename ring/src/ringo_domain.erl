@@ -221,6 +221,8 @@ handle_cast({new_domain, Name, Chunk, From, Params},
         #domain{id = DomainID} = D) ->
 
         InfoPack = [{nrepl, proplists:get_value(nrepl, Params)},
+                    {keycache, proplists:is_defined(keycache, Params)},
+                    {noindex, proplists:is_defined(noindex, Params)},
                     {chunk, Chunk},
                     {name, list_to_binary(Name)},
                     {id, DomainID}],
@@ -672,7 +674,7 @@ replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Prev, _Tries) ->
         % XXX: This is the correct line:
         %Me = {net_adm:localhost(), node(), self()},
         % XXX: This is for debugging:
-        error_logger:info_report({"replicate", EntryID, size(Entry)}),
+        %error_logger:info_report({"replicate", EntryID, size(Entry)}),
         Me = {os:getenv("DBGHOST"), node(), self()},
         if Prev == node() -> ok;
         true ->

@@ -38,11 +38,14 @@ start_link(Domain, Home, DBName, Options) ->
         {ok, S}.
 
 init([Domain, Home, DBName, Options]) ->
-        error_logger:info_report({"Index opens for", DBName}),
-        {CacheType, Cache} = case proplists:is_defined(keycache, Options) of
-                true -> {keycache, {dict:new(), lrucache:new()}};
-                false -> {iblock, []}
-        end,
+        error_logger:info_report({"Index opens for", DBName, Options}),
+        {CacheType, Cache} = case {
+                proplists:get_value(keycache, Options, false),
+                proplists:get_value(noindex, Options, false)} of
+                        {_, true} -> {none, none};
+                        {true, false} -> {key, {dict:new(), lrucache:new()}};
+                        {false, false} -> {iblock, []}
+                end,
         CacheLimit = ringo_util:get_iparam("KEYCACHE_LIMIT", ?KEYCACHE_LIMIT),
         
         {ok, DB} = bfile:fopen(DBName, "r"),
@@ -75,22 +78,29 @@ handle_cast({get, Key, From}, #index{cache_type = key,
         home = Home, db = DB} = D) ->
         
         {Lst, D0} = keycache_get(Key, D),
-        Offsets = lists:flatten([ringo_index:decode_poslist(P)
-                || P <- Lst, is_binary(P)]),
+        Offsets = lists:flatten([ringo_index:decode_poslist(P) || P <- Lst,
+                is_bitstring(P)]),
         send_entries(Offsets, From, DB, Home, Key),
         {noreply, D0};
+
+handle_cast({get, _, _}, #index{cache_type = none,
+        home = _Home, db = _DB} = D) ->
+        {noreply, D};
+
+handle_cast({put, _, _, _}, #index{cache_type = none} = D) ->
+        {noreply, D};
 
 % ignore entries that were already indexed during initialization
 handle_cast({put, _, Pos, _}, #index{cur_offs = Offs} = D) when Pos < Offs ->
         {noreply, D};
                 
-handle_cast({put, Key, Pos, EndPos}, #index{cur_iblock = Iblock, cur_offs = O,
+handle_cast({put, Key, Pos, EndPos}, #index{cur_iblock = Iblock,
         cur_size = Size} = D) ->
         
-        error_logger:info_report({"Add pos", Pos, EndPos, "start", O}),
+        %error_logger:info_report({"Add pos", Pos, EndPos, "start", O}),
 
         NIblock = ringo_index:add_item(Iblock, Key, Pos),
-        error_logger:info_report({"Added"}),
+        %error_logger:info_report({"Added"}),
         {noreply, save_iblock(D#index{cur_iblock = NIblock,
                 cur_offs = EndPos, cur_size = Size + 1})};
 
@@ -135,21 +145,14 @@ handle_info({ringo_reply, _, _}, D) ->
 %%%
 
 send_entries(Offsets, From, DB, Home, Key) ->
-        error_logger:info_report({"Offsets", Offsets}),
         % Offsets should be in increasing order to benefit most from read-ahead
         % buffering and page caching.
         lists:foreach(fun(Offset) ->
                 case ringo_index:fetch_entry(DB, Home, Key, Offset) of
-                        {_Time, _Key, Value} -> 
-                                error_logger:info_report({"Sending", Offset}),
-                                From ! {entry, Value};
+                        {_Time, _Key, Value} -> From ! {entry, Value};
                         % ignore corruped entries -- might not be wise
-                        invalid_entry ->
-                                error_logger:info_report({"Invalid", Offset}),
-                                ok;
-                        ignore -> 
-                                error_logger:info_report({"Ignore", Offset}),
-                                ok
+                        invalid_entry -> ok;
+                        ignore -> ok
                 end
         end, Offsets),
         From ! done.
@@ -164,12 +167,13 @@ save_iblock(#index{cur_iblock = Iblock, cur_start = Start, cur_offs = End,
         
         error_logger:info_report({"Iblock full!"}),
 
-        Key = io_lib:format("iblock-~b-~b", [Start, End]),
-        SIblock = ringo_index:serialize(Iblock),
+        Key = iolist_to_binary(io_lib:format("iblock-~b-~b", [Start, End])),
+        SIblock = iolist_to_binary(ringo_index:serialize(Iblock)),
         gen_server:cast(Domain, {put, Key, SIblock, [iblock], self()}),
         D0 = update_cache(SIblock, D),
+        error_logger:info_report({"Iblock full! ok"}),
         D0#index{cur_start = End, cur_iblock = ringo_index:new_dex(),
-                        iblocks = Iblocks ++ [Key]}.
+                 cur_size = 0, iblocks = Iblocks ++ [Key]}.
         
 
 update_cache(SIblock, #index{cache_type = iblock, cache = Cache} = D) ->
@@ -196,10 +200,17 @@ update_keycache(Key, {ok, {Sze, Lst}}, #index{cache = {Cache, LRU}} = D) ->
 update_keycache(Key, error, #index{home = Home, cur_iblock = Current,
         iblocks = Iblocks, cache = {Cache, _}} = D) ->
 
-        Sze = dict:fold(fun(K, V, S) -> S + entry_size(K, V) end, 0, Cache),
+        %error_logger:info_report({"CP 1", Key}),
+        Sze = dict:fold(fun(K, {_, V}, S) ->
+                S + entry_size(K, V)
+        end, 0, Cache),
+        %error_logger:info_report({"CP 2"}),
         KeyOffsets = keycache_newentry(Key, Iblocks, Current, Home),
+        %error_logger:info_report({"CP 3"}),
         EntrySize = entry_size(Key, KeyOffsets),
+        %error_logger:info_report({"CP 4"}),
         D0 = keycache_evict(Sze, EntrySize, D),
+        %error_logger:info_report({"CP 5"}),
         {Cache0, LRU0} = D0#index.cache,
         CacheValue = {EntrySize, KeyOffsets}, 
         update_keycache(Key, {ok, CacheValue}, D0#index{cache = 
@@ -209,13 +220,13 @@ keycache_newentry(Key, Iblocks, Current, Home) ->
         Hash = ringo_index:dexhash(Key),
         {_, CL} = ringo_index:find_key(Hash, Current, false),
         lists:map(fun(IblockFile) ->
-                Path = filename:join(Home, IblockFile),
+                Path = filename:join(Home, binary_to_list(IblockFile)),
                 case ringo_reader:read_file(Path) of
                         {ok, Iblock} -> {_, L} = ringo_index:find_key(
                                 Hash, Iblock, false), L;
                         _ -> []
                 end
-        end, Iblocks) ++ CL.
+        end, Iblocks) ++ [CL].
 
 keycache_evict(CacheSze, EntrySze, #index{cache_limit = Limit} = D)
         when CacheSze + EntrySze < Limit -> D;
@@ -225,14 +236,21 @@ keycache_evict(CacheSze, EntrySze, #index{cache = {Cache, LRU}} = D) ->
         if X == nil -> D;
         true ->
                 {{Key, Sze}, LRU0} = X, 
-                keycache_evict(CacheSze - Sze, EntrySze, #index{cache =
+                keycache_evict(CacheSze - Sze, EntrySze, D#index{cache =
                         {dict:erase(Key, Cache), LRU0}})
         end.
 
 % Calculate cache size. 64 is an approximate cost in bytes  to upkeep a key
 % in the cache
-entry_size(K, V) -> iolist_size(V) + size(K) + 64.
-         
+entry_size(K, V) -> entry_size0(size(K) + 64, V).
+entry_size0(S, []) -> S;
+entry_size0(S, [X|R]) when is_bitstring(X) ->
+        entry_size0(S + size(bin_util:pad(X)), R);
+entry_size0(S, [X|R]) when is_binary(X) ->
+        entry_size0(S + size(X), R);
+entry_size0(S, [_|R]) ->
+        entry_size0(S, R).
+
 %%%
 %%%
 %%%
