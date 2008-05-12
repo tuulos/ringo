@@ -38,9 +38,9 @@
                "Status: ~w\r\n"
                "Content-type: text/plain\r\n\r\n").
 
--define(HTTP_HEADER, "HTTP/1.1 200 OK\n"
+-define(HTTP_HEADER(X), ["HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
-                     "Content-type: text/plain\n\n").
+                     "Content-type:", X, "\r\n"]).
 
 % scgi_server external interface
 
@@ -92,11 +92,22 @@ scgi_worker(LSocket) ->
 
 handle_request(Socket, Msg) ->
         case catch dispatch_request(Socket, Msg) of
-                ok -> null;
+                {json, Res} ->
+                        gen_tcp:send(Socket, [?HTTP_HEADER(
+                                "text/plain"), json:encode(Res)]);
+                {data, Res} ->
+                        gen_tcp:send(Socket, [?HTTP_HEADER(
+                                "application/octet-stream"), Res]);
+                {chunked, ReplyGen} ->
+                        % FIXME: Check how Lighttpd handles chunked output
+                        gen_tcp:send(Socket, [?HTTP_HEADER(
+                                "application/octet-stream")]),
+                        ringogw_util:chunked_reply(fun(B) ->
+                                gen_tcp:send(Socket, B) end, ReplyGen);
                 {http_error, Code, Error} ->
                         gen_tcp:send(Socket, [io_lib:format(?ERROR, [Code, Code]),
                                 json:encode(Error)]);
-                {'EXIT', {timeout, Error}} ->
+                {'EXIT', Error} ->
                         error_logger:info_report(["Timeout",
                                 trunc_io:fprint(Error, 500)]),
                         gen_tcp:send(Socket, ?ERROR_500);
@@ -127,12 +138,10 @@ dispatch_request(Socket, Msg) ->
                 true ->
                         PostData = <<>>
                 end,
-                {ok, Res} = Mod:op(Script, httpd:parse_query(Query), PostData);
+                Mod:op(Script, httpd:parse_query(Query), PostData);
         true ->
-                {ok, Res} = Mod:op(Script, httpd:parse_query(Query))
-        end,
-        error_logger:info_report({"Request processed in ", Res}),
-        gen_tcp:send(Socket, [?HTTP_HEADER, json:encode(Res)]).
+                Mod:op(Script, httpd:parse_query(Query))
+        end.
 
 % callback stubs
 

@@ -3,13 +3,13 @@
 
 op("nodes", _Query) ->
         case catch ets:tab2list(node_status_table) of 
-                {'EXIT', _} -> {ok, []};
-                L -> {ok, check_ring(ringo_util:group_pairs(L))}
+                {'EXIT', _} -> {json, []};
+                L -> {json, check_ring(ringo_util:group_pairs(L))}
         end;
 
 op("reset", _Query) ->
         catch exit(whereis(check_node_status), kill),
-        {ok, {ok, <<"killed">>}}.
+        {json, {ok, <<"killed">>}}.
 
 start_check_node_status() ->
         {ok, spawn_link(fun() -> register(check_node_status, self()),

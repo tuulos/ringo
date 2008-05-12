@@ -40,7 +40,18 @@ catch_op(Req, Mod, Args) ->
                         error_logger:error_report({"Request failed", Error}),
                         Req:respond({500, [{"Content-Type", "text/plain"}],
                                 <<"\"Internal server error\"">>});
-                {ok, Res} ->
-                        %error_logger:error_report({"OK Reply", Args, Res}),
-                        Req:ok({"text/plain", json:encode(Res)})
+                {json, Res} ->
+                        Req:ok({"text/plain", json:encode(Res)});
+                
+                {data, Res} ->
+                        Req:ok({"application/octet-stream", Res});
+
+                {chunked, ReplyGen} ->
+                        Req:respond({200, [{"Content-type",
+                                "application/octet-stream"}], chunked}),
+                        ringogw_util:chunked_reply(
+                                fun(B) -> Req:send(B) end, ReplyGen)
         end.
+
+
+

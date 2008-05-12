@@ -9,8 +9,10 @@
         {b, "create", false}]).
 -define(CREATE_FLAGS, [nrepl]).
 
--define(PUT_DEFAULTS, [{b, "overwrite", false}, {i, "timeout", "1000"}]).
--define(PUT_FLAGS, [overwrite]).
+-define(PUT_DEFAULTS, [{i, "timeout", "1000"}]).
+-define(PUT_FLAGS, []).
+-define(GET_DEFAULTS, [{i, "timeout", "1000"}]).
+-define(GET_FLAGS, []).
 
 % FIXME: What happens when we send a request to a node that doesn't have a 
 % valid successor in the ring? Does it die (no good, if it's trying to
@@ -36,10 +38,10 @@ op([C|_] = Domain, Params, _Data) when is_integer(C) ->
                 T = proplists:get_value(timeout, PParams),
                 case ringo_receive(DomainID, T) of
                         {ok, {Node, _Pid}} ->
-                                {ok, {ok, <<"domain created">>,
+                                {json, {ok, <<"domain created">>,
                                         {Node, formatid(DomainID)}}};
                         {error, eexist} ->
-                                {ok, {error, <<"domain already exists">>}};
+                                {json, {error, <<"domain already exists">>}};
                         Error ->
                                 error_logger:warning_report(
                                         {"Unknown create reply", Error}),
@@ -64,13 +66,13 @@ op([Domain, Key], Params, Value) ->
         T = proplists:get_value(timeout, PParams),
         case ringo_receive(DomainID, T) of
                 {ok, {Node, EntryID}} ->
-                        {ok, {ok, <<"put ok">>, Node,
+                        {json, {ok, <<"put ok">>, Node,
                                 formatid(DomainID), formatid(EntryID)}};
                 {error, invalid_domain} ->
-                        {ok, {error, <<"Domain doesn't exist">>}};
+                        {json, {error, <<"Domain doesn't exist">>}};
                 {error, domain_full} ->
                         % CHUNK FIX: Try next chunk
-                        {ok, {error, <<"Domain full">>}};
+                        {json, {error, <<"Domain full">>}};
                 Error ->
                         error_logger:warning_report(
                                 {"Unknown put reply", Error}),
@@ -85,9 +87,31 @@ op(_, _, _) ->
 %        op1(Script, Params).
 
 % GET
-op([Domain, Key], _Params) ->
-        error_logger:info_report({"GET", Domain, "KEY", Key}),
-        {ok, []};
+% unless parameter ?single is specified, values are sent one by one to the
+% requested using chunked encoding. Each value is prefixed by its length, so 
+% the client can decode individual values from the sequence/ If ?single is 
+% specified, only the first value is sent to the requester without the length
+% prefix, which makes it possible to view the value directly in the browser.
+% (Consider supporting different mime-types, given a proper parameter).
+op([Domain, Key], Params) ->
+        error_logger:info_report({"CP 1", Params}),
+        PParams = parse_params(Params, ?PUT_DEFAULTS),
+        error_logger:info_report({"CP 2", PParams}),
+        {ok, _} = ringo_send(Domain, 
+                {get, list_to_binary(Key), self()}),
+                proplists:get_value(timeout, PParams),
+        error_logger:info_report({"CP 3"}),
+        Single = proplists:get_value(single, PParams),
+        error_logger:info_report({"CP 4"}),
+        T = proplists:get_value(timeout, PParams),
+        error_logger:info_report({"CP 5"}),
+        if Single ->
+                error_logger:info_report({"CP 6"}),
+                ringo_receive_chunked(single, T);
+        true ->
+                error_logger:info_report({"CP 7"}),
+                ringo_receive_chunked(many, T)
+        end;
 
 op(_, _) ->
         throw({http_error, 400, <<"Invalid request">>}).
@@ -109,6 +133,27 @@ ringo_send(Domain, Msg) ->
                 Error -> throw({'EXIT', Error})
         end,
         {ok, DomainID}.
+
+ringo_receive_chunked(Mode, Timeout) when Timeout > 10000 ->
+        ringo_receive_chunked(Mode, Timeout);
+
+ringo_receive_chunked(single, Timeout) ->
+        receive
+                {entry, E} ->
+                        error_logger:info_report({"CP 8"}),
+                        {data, E}
+        after Timeout ->
+                throw({http_error, 408, <<"Request timeout">>})
+        end;
+
+ringo_receive_chunked(many, Timeout) ->
+        {chunked, fun() ->
+                receive 
+                        {entry, _} = E -> E;
+                        done -> done
+                after Timeout -> timeout
+                end
+        end}.
 
 ringo_receive(DomainID, Timeout) when Timeout > 10000 ->
         ringo_receive(DomainID, 10000);

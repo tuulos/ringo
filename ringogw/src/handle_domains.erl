@@ -3,12 +3,12 @@
 
 op("node", [{"name", NodeS}|_]) ->
         Node = list_to_existing_atom(NodeS),
-        {ok, [fetch_domaininfo(X) || X <- 
+        {json, [fetch_domaininfo(X) || X <- 
                 ets:lookup(infopack_cache, {node, Node})]};
 
 op("domain", [{"name", NameS}|_]) ->
         Name = list_to_binary(NameS),
-        {ok, [fetch_domaininfo(X) || X <-
+        {json, [fetch_domaininfo(X) || X <-
                 ets:lookup(infopack_cache, {name, Name})]};
 
 op("domain", [{"id", [$0, $x|IdS]}|_]) ->
@@ -26,7 +26,7 @@ op("domain", [{"id", IdS}|_]) ->
                 {get_status, self()}}),
         Status = receive_domainstatus([], length(Nodes)),
 
-        {ok, [list_to_binary(erlang:integer_to_list(DomainID, 16)),
+        {json, [list_to_binary(erlang:integer_to_list(DomainID, 16)),
                 Name, Chunk, lists:map(fun(N) ->
                 case lists:keysearch(N, 1, Status) of
                         {value, {_, S}} -> {obj, [{node, N}|S]};
@@ -36,7 +36,7 @@ op("domain", [{"id", IdS}|_]) ->
 
 op("reset", _Query) ->
         catch exit(whereis(check_domains), kill),
-        {ok, {ok, <<"killed">>}}.
+        {json, {ok, <<"killed">>}}.
 
 fetch_domaininfo({_, DomainID}) ->
         [{_, {Name, Node, Chunk}}|_] = Repl =
