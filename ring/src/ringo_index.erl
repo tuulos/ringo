@@ -1,6 +1,6 @@
 -module(ringo_index).
 -export([build_index/3, fetch_entry/4, new_dex/0, add_item/3, serialize/1]).
--export([dexhash/1, find_key/2, find_key/3, decode_poslist/1]).
+-export([deserialize/1, dexhash/1, find_key/2, find_key/3, decode_poslist/1]).
 
 -include("ringo_store.hrl").
 
@@ -65,6 +65,13 @@ serialize(Dex) ->
         Offsets = bin_util:pad(list_to_bitstring(MOffs)),
         [<<(size(SingleSeg)):32, (size(MultiSeg)):32, (size(Offsets)):32>>,
                 SingleSeg, MultiSeg, Offsets].
+
+deserialize(Dex) ->
+        <<SingleSegSize:32, MultiSegSize:32, OffsetSize:32,
+                SingleSeg:SingleSegSize/binary,
+                MultiSeg:MultiSegSize/binary,
+                Offsets:OffsetSize/binary>> = Dex,
+        {SingleSeg, MultiSeg, Offsets}.
 
 find_key(Key, Dex) -> find_key(Key, Dex, true).
 

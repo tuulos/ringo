@@ -1,5 +1,5 @@
 -module(ringo_debug).
--export([dump_ids/1, dump_merkle/1]).
+-export([dump_ids/1, dump_merkle/1, dump_iblock/1]).
 
 dump_ids(DBName) ->
         io:fwrite("# Date Time SyncID EntryID Leaf~n"),
@@ -20,6 +20,21 @@ dump_merkle(DBName) ->
                 io:fwrite("L ~b > ", [Leaf]),
                 print_leaves(List)
         end, 0, LeafIDs).
+
+dump_iblock(IBName) ->
+        {ok, Dex} = ringo_reader:read_file(IBName),
+        {SingleSeg, MultiSeg, Offsets} = ringo_index:deserialize(Dex),
+        lists:foreach(fun({Key, Offs}) ->
+                io:fwrite("~b ~b~n", [Key, Offs])
+        end, bin_util:decode_kvsegment(SingleSeg)),
+        lists:foreach(fun({Key, Offs}) ->
+                <<_:Offs/bits, V/bits>> = Offsets,
+                io:fwrite("~b ", [Key]),
+                lists:foreach(fun(X) ->
+                        io:fwrite("~b ", [X])
+                end, ring_index:decode_poslist(V)),
+                io:fwrite("~n")
+        end, bin_util:decode_kvsegment(MultiSeg)).
 
 print_leaves(List) ->
         lists:map(fun(<<X:64>>) ->
