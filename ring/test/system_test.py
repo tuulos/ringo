@@ -119,6 +119,57 @@ def _check_extfiles(node, domainid, num):
         files = os.listdir("%s/%s/rdomain-%s/" % (home_dir, node, domainid))
         return len([f for f in files if f.startswith("value")]) == num
 
+def _cache_test(**kwargs):
+        def check_values(key, ret):
+                for i, v in enumerate(ret):
+                        if v != key + "-pie-%d" % i:
+                                raise "Invalid results: Key <%s>: %s"\
+                                        % (key, r)
+
+        if not _test_ring(1):
+                return False
+        
+        node, domainid = ringogw.create("cachetest", 5, **kwargs)
+        print "Putting 100500 items.."
+        t = time.time()
+        head = []
+        tail = []
+        for i in range(105):
+                key = "head-%d" % i
+                head.append(key)
+                for j in range(100):
+                        ringogw.put("cachetest", key, key + "-pie-%d" % j)
+        for i in range(50500):
+                key = "tail-%d" % i
+                tail.append(key)
+                ringogw.put("cachetest", key, key + "-pie-0")
+
+        print "items put in %dms" % ((time.time() - t) * 1000)
+
+        print "Retrieving all keys and checking values.."
+        t = time.time()
+        for key in head + tail:
+                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        
+        print "Getting 10000 keys in sequential order"
+        s = random.sample(head, 100) + random.sample(tail, 10)
+        t = time.time()
+        for i in range(10):
+                random.shuffle(s)
+                for key in s:
+                        for j in range(10):
+                                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+
+        print "Getting 10000 keys in random order"
+        t = time.time()
+        for i in range(10000):
+                key = random.choice(tail)
+                check_values(key, ringogw.get("cachetest", key))
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        return True
+
 # make a ring, check that converges
 def test01_ring10():
         return _test_ring(10)
@@ -452,56 +503,6 @@ def test14_multiget():
                 raise "Invalid number of replies: %d" % len(out)
         return True
 
-def _cache_test(**kwargs):
-        def check_values(key, ret):
-                for i, v in enumerate(ret):
-                        if v != key + "-pie-%d" % i:
-                                raise "Invalid results: Key <%s>: %s"\
-                                        % (key, r)
-
-        if not _test_ring(1):
-                return False
-        
-        node, domainid = ringogw.create("cachetest", 5, **kwargs)
-        print "Putting 100500 items.."
-        t = time.time()
-        head = []
-        tail = []
-        for i in range(105):
-                key = "head-%d" % i
-                head.append(key)
-                for j in range(100):
-                        ringogw.put("cachetest", key, key + "-pie-%d" % j)
-        for i in range(50500):
-                key = "tail-%d" % i
-                tail.append(key)
-                ringogw.put("cachetest", key, key + "-pie-0")
-
-        print "items put in %dms" % ((time.time() - t) * 1000)
-
-        print "Retrieving all keys and checking values.."
-        t = time.time()
-        for key in head + tail:
-                check_values(key, ringogw.get("cachetest", key))
-        print "Get took %dms" % ((time.time() - t) * 1000)
-        
-        print "Getting 10000 keys in sequential order"
-        s = random.sample(head, 100) + random.sample(tail, 10)
-        t = time.time()
-        for i in range(10):
-                random.shuffle(s)
-                for key in s:
-                        for j in range(10):
-                                check_values(key, ringogw.get("cachetest", key))
-        print "Get took %dms" % ((time.time() - t) * 1000)
-
-        print "Getting 10000 keys in random order"
-        t = time.time()
-        for i in range(10000):
-                key = random.choice(tail)
-                check_values(key, ringogw.get("cachetest", key))
-        print "Get took %dms" % ((time.time() - t) * 1000)
-        return True
         
 
 def test15_iblockcache():
@@ -517,7 +518,7 @@ def test17_putget(**kwargs):
                 print "Testing with key cache"
         else:
                 print "Testing with iblock cache"
-                if not _test_ring(1):
+                if not _test_ring(5):
                         return False
         
         dname = "putgettest-%s" % keycache
@@ -530,7 +531,7 @@ def test17_putget(**kwargs):
                 key = "k-%d-%s" % (i, keycache)
                 for j in range(10):
                         for value in values:
-                                ringogw.put(dname, key, value)
+                                r = ringogw.put(dname, key, value)        
                         r = ringogw.get(dname, key) 
                         if r != values * (j + 1):
                                 raise "Invalid reply %s expected %s" %\
@@ -541,6 +542,64 @@ def test17_putget(**kwargs):
                 return True
         else:
                 return test17_putget(keycache = True)
+
+def test18_regeniblocks():
+        N = 50500
+        def check_get():
+                for i in range(N):
+                        r = ringogw.get("regentest", "abc-%d" % i)
+                        if r != ['def-%d' % i]:
+                                raise "Invalid reply to key %s: %s" %\
+                                        ("abc-%d" % i, r)
+        if not _test_ring(1):
+                return False
+        node, domainid = ringogw.create("regentest", 5)
+        print "Putting %d entries.." % N
+        for i in range(N):
+                ringogw.put("regentest", "abc-%d" % i, "def-%d" % i)
+        print "Entries put"
+        check_get()
+        print "Get ok"
+
+        kill_id = node.split('@')[0].split("-")[1]
+        print "Kill owner", kill_id
+        kill_node(kill_id)
+
+        path = "%s/%s/rdomain-%s/" % (home_dir, kill_id, domainid)
+        ifiles = sorted([(int(x.split('-')[1]), x)\
+                        for x in os.listdir(path) if x.startswith("iblock")])
+        if len(ifiles) != N / 10000:
+                print "Incorrect number of iblocks: %d expected %d"\
+                        % (len(ifiles), N / 10000)
+                print "iblocks", ifiles
+                return False
+        iblocks = [] 
+        print "Removing some iblocks"
+        for i, iblock in enumerate(ifiles):
+                fname = "%s/%s" % (path, iblock[1])
+                f = file(fname).read()
+                iblocks.append((iblock[1], md5.md5(f).hexdigest()))
+                if i % 2:
+                        print "Deleting", iblock[1]
+                        os.remove(fname)
+        
+        print "Reincarnating owner"
+        new_node(kill_id)
+        if not _wait_until("/mon/ring/nodes",
+                        lambda x: _check_results(x, 1), 60):
+                return False
+        print "Check get.."
+        check_get()
+        print "Get ok"
+        print "Checking iblocks"
+        for iblock, checksum in iblocks:
+                fname = "%s/%s" % (path, iblock)
+                f = file(fname).read()
+                if checksum != md5.md5(f).hexdigest():
+                        print "Checksums don't match for iblock", iblock
+                        return False
+        print "Checksums match"
+        return True
 
 # 1. test that iblocks are re-generated ok: Put N iblocks, delete K iblocks, 
 #    check that re-generated iblocks are identical

@@ -26,7 +26,13 @@
 % seconds but start_link returns instantly anyway. However, this means that
 % requests to the server will be queued until re-indexing finishes.
 
-% Enable nodelay on sockets!
+% The assumed benefit of keycache is that if there's such a large number
+% iblocks that keeping them in memory is infeasible, and due to the
+% nature of the application the LRU assumption holds for keys, keycache
+% should be a viable alternative. The crucial point is that it should
+% take less memory than the iblock cache, which seems to be a difficult
+% goal to achieve, given that we have to maintain *two* gb_trees, one for
+% the cache proper and for the LRU structure.
 
 start_link(Domain, Home, DBName, Options) ->
         S = case gen_server:start_link(ringo_indexdomain, 
@@ -59,7 +65,8 @@ init([Domain, Home, DBName, Options]) ->
                    domain = Domain,
                    db = DB,
                    home = Home,
-                   dbname = DBName
+                   dbname = DBName,
+                   iblocks = []
         }}.
 
 handle_call(_, _, D) -> {reply, error, D}.
@@ -105,11 +112,15 @@ handle_cast({put, Key, Pos, EndPos}, #index{cur_iblock = Iblock,
                 cur_offs = EndPos, cur_size = Size + 1})};
 
 
+% Initialize re-indexes the DB. Indexing is done in two phases:
+% First, we check all existing iblocks on disk and load and 
+% re-process them if possible. Secondly, rest of the DB which is
+% not covered by the existing iblocks, is reindexed in index_iblock().
 handle_cast(initialize, #index{home = Home} = D) ->
         % Find existing iblocks in the domain's home directory
         Cands = lists:keysort(1, [X || X <- lists:map(fun(F) ->
                 case string:tokens(F, "-") of
-                        [_, S, E, _] ->
+                        [_, S, E] ->
                                 {list_to_integer(S), list_to_integer(E), F};
                         _ -> error_logger:warning_report(
                                 {"Invalid iblock file", F}), none
@@ -118,22 +129,32 @@ handle_cast(initialize, #index{home = Home} = D) ->
         
         % Find out how much of the index the existing iblocks cover. StartPos
         % denotes the last byte covered by an iblock (holes are not allowed
-        % in the coverage).
-        {Iblocks, StartPos} = lists:mapfoldl(fun
-                ({S, E, F}, Pos) when S == Pos -> {F, E};
-                (_, Pos) -> {none, Pos}
-        end, 0, Cands),
-        error_logger:info_report({"Iblocks", Iblocks, "StartPOS", StartPos}),
-        {noreply, index_iblock(D#index{iblocks = Iblocks, cur_offs = StartPos},
-                ?IBLOCK_SIZE)}.
+        % in the coverage). Load iblocks and process them as they would have
+        % been just created.
+        error_logger:info_report({"Candidates", Cands}),
+        {_, D0} = lists:foldl(fun
+                ({S, E, F}, {Pos, Dx} = X) when S == Pos ->
+                        Path = filename:join(Home, F),
+                        case ringo_reader:read_file(Path) of
+                                {ok, Iblock} -> {E, save_iblock(F, Iblock,
+                                        Dx#index{cur_offs = E})};
+                                _ -> X
+                        end;
+                (_, X) -> X
+        end, {0, D}, Cands),
+        
+        error_logger:info_report({"Ca", Cands}),
+
+        % Re-index the rest
+        {noreply, index_iblock(D0, ?IBLOCK_SIZE)}.
 
 index_iblock(D, N) when N < ?IBLOCK_SIZE -> D;
 index_iblock(#index{dbname = DBName, cur_offs = StartPos} = D, _) ->
-        {N, Dex, EndPos} = ringo_index:build_index(
-                DBName, StartPos, ?IBLOCK_SIZE),
+        {N, Dex, EndPos} = ringo_index:build_index(DBName, StartPos,
+                ?IBLOCK_SIZE),
         error_logger:info_report({"Build index N", N, "EndPos", EndPos}),
         D0 = save_iblock(D#index{cur_iblock = Dex, cur_start = StartPos,
-                cur_offs = EndPos}),
+                cur_offs = EndPos, cur_size = N}),
         index_iblock(D0, N).
 
 % reply to save_iblock's put request
@@ -162,19 +183,23 @@ send_entries(Offsets, From, DB, Home, Key) ->
 %%%
 
 save_iblock(#index{cur_size = Size} = D) when Size < ?IBLOCK_SIZE -> D;
-save_iblock(#index{cur_iblock = Iblock, cur_start = Start, cur_offs = End,
-        iblocks = Iblocks, domain = Domain} = D) ->
+save_iblock(#index{cur_iblock = Iblock, cur_start = Start,
+        cur_offs = End} = D) ->
         
         error_logger:info_report({"Iblock full!"}),
+        Key = io_lib:format("iblock-~b-~b", [Start, End]),
+        save_iblock(Key, iolist_to_binary(ringo_index:serialize(Iblock)), D).
+        
+save_iblock(Key0, SIblock, #index{domain = Domain, cur_offs = End,
+        iblocks = Iblocks} = D) ->
 
-        Key = iolist_to_binary(io_lib:format("iblock-~b-~b", [Start, End])),
-        SIblock = iolist_to_binary(ringo_index:serialize(Iblock)),
+        Key = iolist_to_binary(Key0),
+        error_logger:info_report({"handling iblock", Key, "end", End}),
         gen_server:cast(Domain, {put, Key, SIblock, [iblock], self()}),
         D0 = update_cache(SIblock, D),
         error_logger:info_report({"Iblock full! ok"}),
         D0#index{cur_start = End, cur_iblock = ringo_index:new_dex(),
                  cur_size = 0, iblocks = Iblocks ++ [Key]}.
-        
 
 update_cache(SIblock, #index{cache_type = iblock, cache = Cache} = D) ->
         D#index{cache = [SIblock|Cache]};

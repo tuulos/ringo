@@ -275,7 +275,7 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
         prevnode = Prev} = D) when Full == false; Flags == [iblock] ->
 
         EntryID = random:uniform(4294967295),
-        Entry = ringo_writer:make_entry(EntryID, Key, Value, Flags),
+        {E, _} = Entry = ringo_writer:make_entry(EntryID, Key, Value, Flags),
         From ! {ringo_reply, DomainID, {ok, {node(), EntryID}}},
        
         {ok, Pos} = bfile:ftell(DB),
@@ -283,7 +283,7 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
 
         % Don't index index blocks
         if Flags =/= [iblock] ->
-                gen_server:cast(Index, {put, Key, Pos, Pos + size(Entry)});
+                gen_server:cast(Index, {put, Key, Pos, Pos + iolist_size(E)});
         true -> ok
         end,
 
