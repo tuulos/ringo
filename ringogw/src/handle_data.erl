@@ -129,8 +129,7 @@ ringo_receive_chunked(Mode, Timeout) when Timeout > 60000 ->
 
 ringo_receive_chunked(single, Timeout) ->
         receive
-                {entry, E} ->
-                        {data, E}
+                {entry, E} -> {data, E}
         after Timeout ->
                 throw({http_error, 408, <<"Request timeout">>})
         end;
@@ -150,7 +149,7 @@ ringo_receive(DomainID, Timeout) when Timeout > 60000 ->
 ringo_receive(DomainID, Timeout) ->
         receive
                 {ringo_reply, DomainID, Reply} -> Reply;
-                Other -> Other
+                _ -> ringo_receive(DomainID, Timeout)
         after Timeout ->
                 % Ring may have changed, update node list immediately
                 active_node_updater ! update,

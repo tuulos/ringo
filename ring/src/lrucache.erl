@@ -11,7 +11,7 @@
 %%% of large binary keys, as would happen with ets.
 %%%
 
-new() -> {dict:new(), nil, nil}.
+new() -> {gb_trees:empty(), nil, nil}.
 
 is_empty({_, nil, nil}) -> true;
 is_empty(_) -> false.
@@ -24,36 +24,37 @@ get_lru({_, H, H}) -> {H, new()};
 
 % normal case 
 get_lru({D, H, T}) ->
-        {Prev, _} = dict:fetch(H, D),
-        {Prev0, _} = dict:fetch(Prev, D),
-        {H, {dict:store(Prev, {Prev0, nil}, D), Prev, T}}.
+        {Prev, _} = gb_trees:get(H, D),
+        {Prev0, _} = gb_trees:get(Prev, D),
+        {H, {gb_trees:enter(Prev, {Prev0, nil},
+                gb_trees:delete(H, D)), Prev, T}}.
                 
 update(Key, {D, _, _} = LRU) ->
-        update(Key, dict:find(Key, D), LRU).
+        update(Key, gb_trees:lookup(Key, D), LRU).
 
 % first key in the cache
-update(Key, error, {D, nil, nil}) ->
-        {dict:store(Key, {nil, nil}, D), Key, Key};
+update(Key, none, {D, nil, nil}) ->
+        {gb_trees:enter(Key, {nil, nil}, D), Key, Key};
 
 % new key 
-update(Key, error, LRU) -> add_tail(Key, LRU);
+update(Key, none, LRU) -> add_tail(Key, LRU);
 
 % update tail
-update(_, {ok, {nil, _}}, LRU) -> LRU;
+update(_, {value, {nil, _}}, LRU) -> LRU;
 
 % update head
-update(Key, {ok, {Prev, nil}}, {D, _, T}) ->
-        {Prev0, _} = dict:fetch(Prev, D),
-        add_tail(Key, {dict:store(Prev, {Prev0, nil}, D), Key, T});
+update(Key, {value, {Prev, nil}}, {D, _, T}) ->
+        {Prev0, _} = gb_trees:get(Prev, D),
+        add_tail(Key, {gb_trees:enter(Prev, {Prev0, nil}, D), Key, T});
 
 % existing key in the middle
-update(Key, {ok, {Prev, Next}}, {D, H, T}) ->
-        {Prev0, _} = dict:fetch(Prev, D),
-        {_, Next0} = dict:fetch(Next, D),
-        D0 = dict:store(Prev, {Prev0, Next}, D),
-        add_tail(Key, {dict:store(Next, {Prev, Next0}, D0), H, T}).
+update(Key, {value, {Prev, Next}}, {D, H, T}) ->
+        {Prev0, _} = gb_trees:get(Prev, D),
+        {_, Next0} = gb_trees:get(Next, D),
+        D0 = gb_trees:enter(Prev, {Prev0, Next}, D),
+        add_tail(Key, {gb_trees:enter(Next, {Prev, Next0}, D0), H, T}).
         
 add_tail(Key, {D, H, T}) ->
-        {nil, Next} = dict:fetch(T, D),
-        D0 = dict:store(T, {Key, Next}, D),
-        {dict:store(Key, {nil, T}, D0), H, Key}. 
+        {nil, Next} = gb_trees:get(T, D),
+        D0 = gb_trees:enter(T, {Key, Next}, D),
+        {gb_trees:enter(Key, {nil, T}, D0), H, Key}. 

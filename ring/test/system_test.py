@@ -465,24 +465,31 @@ def _cache_test(**kwargs):
         node, domainid = ringogw.create("cachetest", 5, **kwargs)
         print "Putting 100500 items.."
         t = time.time()
-        keys = []
-        for i in range(10050):
-                key = "pumpkin-%d" % i
-                keys.append(key)
-                for j in range(10):
+        head = []
+        tail = []
+        for i in range(105):
+                key = "head-%d" % i
+                head.append(key)
+                for j in range(100):
                         ringogw.put("cachetest", key, key + "-pie-%d" % j)
+        for i in range(50500):
+                key = "tail-%d" % i
+                tail.append(key)
+                ringogw.put("cachetest", key, key + "-pie-0")
+
         print "items put in %dms" % ((time.time() - t) * 1000)
 
         print "Retrieving all keys and checking values.."
         t = time.time()
-        for key in keys:
+        for key in head + tail:
                 check_values(key, ringogw.get("cachetest", key))
         print "Get took %dms" % ((time.time() - t) * 1000)
         
         print "Getting 10000 keys in sequential order"
-        s = random.sample(keys, 100) 
+        s = random.sample(head, 100) + random.sample(tail, 10)
         t = time.time()
         for i in range(10):
+                random.shuffle(s)
                 for key in s:
                         for j in range(10):
                                 check_values(key, ringogw.get("cachetest", key))
@@ -491,7 +498,7 @@ def _cache_test(**kwargs):
         print "Getting 10000 keys in random order"
         t = time.time()
         for i in range(10000):
-                key = random.choice(keys)
+                key = random.choice(tail)
                 check_values(key, ringogw.get("cachetest", key))
         print "Get took %dms" % ((time.time() - t) * 1000)
         return True
@@ -502,6 +509,42 @@ def test15_iblockcache():
         
 def test16_keycache():
         return _cache_test(keycache = True)
+
+def test17_putget(**kwargs):
+
+        keycache = 'keycache' in kwargs
+        if keycache:
+                print "Testing with key cache"
+        else:
+                print "Testing with iblock cache"
+                if not _test_ring(1):
+                        return False
+        
+        dname = "putgettest-%s" % keycache
+        node, domainid = ringogw.create(dname, 5, **kwargs)
+        values = ["zing-%d-%s" % (i, keycache) for i in range(2)]
+
+        print "Putting 15050 keys.."
+
+        for i in range(1505):
+                key = "k-%d-%s" % (i, keycache)
+                for j in range(10):
+                        for value in values:
+                                ringogw.put(dname, key, value)
+                        r = ringogw.get(dname, key) 
+                        if r != values * (j + 1):
+                                raise "Invalid reply %s expected %s" %\
+                                        (r, values * (j + 1))
+        print "Results ok"
+
+        if keycache:
+                return True
+        else:
+                return test17_putget(keycache = True)
+
+# 1. test that iblocks are re-generated ok: Put N iblocks, delete K iblocks, 
+#    check that re-generated iblocks are identical
+# 2. redirected get, new owner, check that get succeeds
 
         
 # 7. (100 domains) create N domains, put entries, killing random domains at the

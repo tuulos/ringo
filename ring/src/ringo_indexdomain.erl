@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 -define(IBLOCK_SIZE, 10000).
--define(KEYCACHE_LIMIT, 5 * 1024 * 1024).
+-define(KEYCACHE_LIMIT, 16 * 1024).
 
 % - cur_iblock is the currently active index (iblock), as returned by 
 %    ringo_index:new_dex()
@@ -43,7 +43,7 @@ init([Domain, Home, DBName, Options]) ->
                 proplists:get_value(keycache, Options, false),
                 proplists:get_value(noindex, Options, false)} of
                         {_, true} -> {none, none};
-                        {true, false} -> {key, {dict:new(), lrucache:new()}};
+                        {true, false} -> {key, {gb_trees:empty(), lrucache:new()}};
                         {false, false} -> {iblock, []}
                 end,
         CacheLimit = ringo_util:get_iparam("KEYCACHE_LIMIT", ?KEYCACHE_LIMIT),
@@ -75,11 +75,14 @@ handle_cast({get, Key, From}, #index{cache_type = iblock, db = DB,
         {noreply, D};
 
 handle_cast({get, Key, From}, #index{cache_type = key,
-        home = Home, db = DB} = D) ->
+        home = Home, db = DB, cur_iblock = Current} = D) ->
         
+        error_logger:info_report({"Get", Key}),
+        Hash = ringo_index:dexhash(Key),
         {Lst, D0} = keycache_get(Key, D),
-        Offsets = lists:flatten([ringo_index:decode_poslist(P) || P <- Lst,
-                is_bitstring(P)]),
+        {_, CL} = ringo_index:find_key(Hash, Current, false),
+        Offsets = lists:flatten([ringo_index:decode_poslist(P) ||
+                P <- Lst ++ [CL], is_bitstring(P)]),
         send_entries(Offsets, From, DB, Home, Key),
         {noreply, D0};
 
@@ -96,11 +99,8 @@ handle_cast({put, _, Pos, _}, #index{cur_offs = Offs} = D) when Pos < Offs ->
                 
 handle_cast({put, Key, Pos, EndPos}, #index{cur_iblock = Iblock,
         cur_size = Size} = D) ->
-        
-        %error_logger:info_report({"Add pos", Pos, EndPos, "start", O}),
 
         NIblock = ringo_index:add_item(Iblock, Key, Pos),
-        %error_logger:info_report({"Added"}),
         {noreply, save_iblock(D#index{cur_iblock = NIblock,
                 cur_offs = EndPos, cur_size = Size + 1})};
 
@@ -180,45 +180,41 @@ update_cache(SIblock, #index{cache_type = iblock, cache = Cache} = D) ->
         D#index{cache = [SIblock|Cache]};
 
 update_cache(SIblock, #index{cache_type = key, cache = {Cache, LRU}} = D) ->
-        D#index{cache = {dict:map(fun(Key, Offsets) ->
+        NC = lists:foldl(fun({Key, {Sze, V}}, C) ->
                 {_, L} = ringo_index:find_key(Key, SIblock, false),
-                Offsets ++ L
-        end, Cache), LRU}}.
+                if L == [] -> C;
+                true -> gb_trees:insert(Key, {Sze + size(L), V ++ [L]}, C)
+                end
+        end, gb_trees:empty(), gb_trees:to_list(Cache)),
+        D#index{cache = {NC, LRU}}.
        
 %%%
 %%% Keycache
 %%%
 
 keycache_get(Key, #index{cache = {Cache, _}} = D) ->
-        update_keycache(Key, dict:find(Key, Cache), D).
+        update_keycache(Key, gb_trees:lookup(Key, Cache), D).
 
 % cache hit
-update_keycache(Key, {ok, {Sze, Lst}}, #index{cache = {Cache, LRU}} = D) ->
+update_keycache(Key, {value, {Sze, Lst}}, #index{cache = {Cache, LRU}} = D) ->
         {Lst, D#index{cache = {Cache, lrucache:update({Key, Sze}, LRU)}}};
 
 % cache miss
-update_keycache(Key, error, #index{home = Home, cur_iblock = Current,
-        iblocks = Iblocks, cache = {Cache, _}} = D) ->
+update_keycache(Key, none, #index{home = Home, iblocks = Iblocks,
+        cache = {Cache, _}} = D) ->
 
-        %error_logger:info_report({"CP 1", Key}),
-        Sze = dict:fold(fun(K, {_, V}, S) ->
-                S + entry_size(K, V)
-        end, 0, Cache),
-        %error_logger:info_report({"CP 2"}),
-        KeyOffsets = keycache_newentry(Key, Iblocks, Current, Home),
-        %error_logger:info_report({"CP 3"}),
+        Sze = gb_fold(fun(S, _, {Sze, _}) -> S + Sze end, 0, 
+                gb_trees:iterator(Cache)),
+        KeyOffsets = keycache_newentry(Key, Iblocks, Home),
         EntrySize = entry_size(Key, KeyOffsets),
-        %error_logger:info_report({"CP 4"}),
         D0 = keycache_evict(Sze, EntrySize, D),
-        %error_logger:info_report({"CP 5"}),
         {Cache0, LRU0} = D0#index.cache,
         CacheValue = {EntrySize, KeyOffsets}, 
-        update_keycache(Key, {ok, CacheValue}, D0#index{cache = 
-                {dict:store(Key, CacheValue, Cache0), LRU0}}).
+        update_keycache(Key, {value, CacheValue}, D0#index{cache = 
+                {gb_trees:insert(Key, CacheValue, Cache0), LRU0}}).
 
-keycache_newentry(Key, Iblocks, Current, Home) ->
+keycache_newentry(Key, Iblocks, Home) ->
         Hash = ringo_index:dexhash(Key),
-        {_, CL} = ringo_index:find_key(Hash, Current, false),
         lists:map(fun(IblockFile) ->
                 Path = filename:join(Home, binary_to_list(IblockFile)),
                 case ringo_reader:read_file(Path) of
@@ -226,7 +222,7 @@ keycache_newentry(Key, Iblocks, Current, Home) ->
                                 Hash, Iblock, false), L;
                         _ -> []
                 end
-        end, Iblocks) ++ [CL].
+        end, Iblocks).
 
 keycache_evict(CacheSze, EntrySze, #index{cache_limit = Limit} = D)
         when CacheSze + EntrySze < Limit -> D;
@@ -237,8 +233,12 @@ keycache_evict(CacheSze, EntrySze, #index{cache = {Cache, LRU}} = D) ->
         true ->
                 {{Key, Sze}, LRU0} = X, 
                 keycache_evict(CacheSze - Sze, EntrySze, D#index{cache =
-                        {dict:erase(Key, Cache), LRU0}})
+                        {gb_trees:delete(Key, Cache), LRU0}})
         end.
+
+gb_fold(F, S, Iter) -> gb_fold0(F, S, gb_trees:next(Iter)).
+gb_fold0(_, S, none) -> S;
+gb_fold0(F, S, {K, V, Iter0}) -> gb_fold0(F, F(S, K, V), gb_trees:next(Iter0)).
 
 % Calculate cache size. 64 is an approximate cost in bytes  to upkeep a key
 % in the cache
