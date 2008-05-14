@@ -392,7 +392,13 @@ handle_cast({get, _, From, _, Node, N}, #domain{id = DomainID} = D)
         when Node == node(); N > ?MAX_RING_SIZE ->
         %error_logger:info_report({"redir get inf"}),
         From ! {ringo_reply, DomainID, {error, invalid_domain}},
-        {noreply, D};
+
+        % If we end up here, we couldn't find a replica that has more and
+        % equal number of entries than specified by the owner's
+        % max_repl_entries record. This happens if the replica that announced
+        % the highest max_repl_entries value has died, thus clearly
+        % max_repl_entries value is not valid anymore and we should reset it.
+        {noreply, D#domain{max_repl_entries = 0}};
 
 % Redirected get: DB not open or this replica doesn't have all the entries
 % -> redirect to previous.
