@@ -8,7 +8,6 @@
 -define(MAX_RECV_BODY, (10 * 1024 * 1024)).
 
 request(Req) ->
-        T = now(),
         {ok, Dyn} = application:get_env(dynroot),
         {ok, Doc} = application:get_env(docroot),
         P = Req:get(path),

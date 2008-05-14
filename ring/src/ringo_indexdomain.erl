@@ -163,13 +163,14 @@ send_entries(Offsets, From, DB, Home, Key) ->
         % buffering and page caching.
         lists:foreach(fun(Offset) ->
                 case ringo_index:fetch_entry(DB, Home, Key, Offset) of
-                        {_Time, _Key, Value} -> From ! {entry, Value};
+                        {_Time, _Key, Value} ->
+                                From ! {ringo_get, {entry, Value}};
                         % ignore corruped entries -- might not be wise
                         invalid_entry -> ok;
                         ignore -> ok
                 end
         end, Offsets),
-        From ! done.
+        From ! {ringo_get, done}.
 
 %%%
 %%% Iblock becomes full

@@ -220,10 +220,12 @@ handle_call({get_file_handle, ExtFile}, _, #domain{home = Home} = D) ->
 
 handle_cast({new_domain, Name, Chunk, From, Params},
         #domain{id = DomainID} = D) ->
-
+        
+        % Remember to update the flags in invalid_domain messages below
+        % if InfoPack changes!
         InfoPack = [{nrepl, proplists:get_value(nrepl, Params)},
-                    {keycache, proplists:is_defined(keycache, Params)},
-                    {noindex, proplists:is_defined(noindex, Params)},
+                    {keycache, proplists:get_value(keycache, Params, false)},
+                    {noindex, proplists:get_value(noindex, Params, false)},
                     {chunk, Chunk},
                     {name, list_to_binary(Name)},
                     {id, DomainID}],
@@ -310,7 +312,8 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
 handle_cast({put, _, _, _, From},
         #domain{id = DomainID, owner = true, full = true} = D) ->
 
-        From ! {ringo_reply, DomainID, {error, domain_full}}, 
+        Chunk = proplists:get_value(chunk, D#domain.info),
+        From ! {ringo_reply, DomainID, {error, domain_full, Chunk}}, 
         {noreply, D};
 
 % Put to a replica: This happens if a get request is redirected to
@@ -328,7 +331,10 @@ handle_cast({put, _, _, _, _}, #domain{owner = false} = D) ->
 handle_cast({redir_put, Owner, N, {put, _, _, _, From}},
         #domain{id = DomainID} = D) when Owner == node(); N > ?MAX_RING_SIZE ->
 
-        From ! {ringo_reply, DomainID, {error, invalid_domain}},
+        % Make sure that the Flags list matches with the InfoPack definition
+        % above
+        Flags = lists:sublist(D#domain.info, 3),
+        From ! {ringo_reply, DomainID, {error, invalid_domain, Flags}},
         {noreply, D};
 
 % no domain on this node, forward
@@ -351,7 +357,8 @@ handle_cast({redir_put, Owner, _, {put, Key, Value, Flags, From}},
 handle_cast({redir_put, _, _, {put, _, _, _, From}},
         #domain{id = DomainID, full = true} = D) ->
         
-        From ! {ringo_reply, DomainID, {error, domain_full}},
+        Chunk = proplists:get_value(chunk, D#domain.info),
+        From ! {ringo_reply, DomainID, {error, domain_full, Chunk}},
         {noreply, D};
 
 %%%
@@ -382,8 +389,13 @@ handle_cast({get, _, _} = P, #domain{index = none, home = Home,
         handle_cast(P, D#domain{index = S});
 
 % Normal case
-handle_cast({get, Key, From}, #domain{index = Index} = D) ->
+handle_cast({get, Key, From}, #domain{index = Index, info = Info} = D) ->
         %error_logger:info_report({"normal get", Key}),
+        if D#domain.full == true ->
+                Chunk = proplists:get_value(chunk, Info),
+                From ! {ringo_get, full, Chunk};
+        true -> ok
+        end,
         gen_server:cast(Index, {get, Key, From}),
         {noreply, D};
 
@@ -727,24 +739,24 @@ replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Prev, _Tries) ->
 % If receive_repl_replies is run on the same process as ringo_domain, note that
 % receive may have to select repl_reply replies amongst are large number of 
 % incoming messages, which is expensive.
-receive_repl_replies(_, _, _, 0) -> ok;
-receive_repl_replies({_, _, EntryID, _, _} = R, Prev, Tries, _N) ->
-        receive
-                {repl_reply, {ring_too_small, EntryID}} ->
-                        ok;
-                {repl_reply, {ok, EntryID}} ->
-                        % Opportunistic replication: If at least
-                        % one replica succeeds, we are happy (and
-                        % assume that quite likely more than one have
-                        % succeeded)
-                        ok
-                        % For less opportunistic replication, uncomment
-                        % the following line to wait for more replies.
-                        %receive_repl_replies(R, Tries, N - 1)
-        after ?REPL_TIMEOUT ->
-                % Re-send policy: Disable this for faster operation. 
-                replicate(R, Prev, Tries + 1)
-        end.
+%receive_repl_replies(_, _, _, 0) -> ok;
+%receive_repl_replies({_, _, EntryID, _, _} = R, Prev, Tries, _N) ->
+%        receive
+%                {repl_reply, {ring_too_small, EntryID}} ->
+%                        ok;
+%                {repl_reply, {ok, EntryID}} ->
+%                        % Opportunistic replication: If at least
+%                        % one replica succeeds, we are happy (and
+%                        % assume that quite likely more than one have
+%                        % succeeded)
+%                        ok
+%                        % For less opportunistic replication, uncomment
+%                        % the following line to wait for more replies.
+%                        %receive_repl_replies(R, Tries, N - 1)
+%        after ?REPL_TIMEOUT ->
+%                % Re-send policy: Disable this for faster operation. 
+%                replicate(R, Prev, Tries + 1)
+%        end.
 
 open_or_clone(Req, From, D) ->
         case catch open_domain(D) of 

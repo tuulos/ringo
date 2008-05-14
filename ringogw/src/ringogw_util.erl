@@ -1,11 +1,14 @@
 -module(ringogw_util).
 -export([chunked_reply/2, flush_inbox/0]).
 
-chunked_reply(Sender, ReplyGen) ->
-        case catch ReplyGen() of
+chunked_reply(Sender, ReplyGen) -> chunked_reply(Sender, ReplyGen, 0).
+chunked_reply(Sender, ReplyGen, N) ->
+        case catch ReplyGen(N) of
                 {entry, Entry} ->
                         Sender(encode_chunk(Entry, <<"ok">>)),
-                        chunked_reply(Sender, ReplyGen);
+                        chunked_reply(Sender, ReplyGen, N);
+                {next, N0} ->
+                        chunked_reply(Sender, ReplyGen, N0);
                 done ->
                         Sender(encode_chunk(done));
                 timeout ->
