@@ -92,7 +92,7 @@ def _wait_until(req, check, timeout):
         print "Checking results",
         for i in range(timeout):
                 time.sleep(1)
-                r = ringogw.request(req)
+                r = ringo.request(req)
                 if check(r):
                         print
                         return True
@@ -103,14 +103,14 @@ def _wait_until(req, check, timeout):
 def _put_entries(name, nitems, retries = 0):
         t = time.time()
         for i in range(nitems):
-                ringogw.put(name, "item-%d" % i, "testitem-%d" % i,
+                ringo.put(name, "item-%d" % i, "testitem-%d" % i,
                         retries = retries)
         print "%d items put in %dms" % (nitems, (time.time() - t) * 1000)
 
 def _test_repl(name, n, nrepl, nitems, create_ring = True):
         if create_ring and not _test_ring(n):
                 return False
-        node, domainid = ringogw.create(name, nrepl)
+        node, domainid = ringo.create(name, nrepl)
         _put_entries(name, nitems)
         return _wait_until("/mon/domains/domain?id=0x" + domainid,
                 lambda x: check_entries(x, n, nitems), 50)
@@ -129,7 +129,7 @@ def _cache_test(**kwargs):
         if not _test_ring(1):
                 return False
         
-        node, domainid = ringogw.create("cachetest", 5, **kwargs)
+        node, domainid = ringo.create("cachetest", 5, **kwargs)
         print "Putting 100500 items.."
         t = time.time()
         head = []
@@ -138,18 +138,18 @@ def _cache_test(**kwargs):
                 key = "head-%d" % i
                 head.append(key)
                 for j in range(100):
-                        ringogw.put("cachetest", key, key + "-pie-%d" % j)
+                        ringo.put("cachetest", key, key + "-pie-%d" % j)
         for i in range(50500):
                 key = "tail-%d" % i
                 tail.append(key)
-                ringogw.put("cachetest", key, key + "-pie-0")
+                ringo.put("cachetest", key, key + "-pie-0")
 
         print "items put in %dms" % ((time.time() - t) * 1000)
 
         print "Retrieving all keys and checking values.."
         t = time.time()
         for key in head + tail:
-                check_values(key, ringogw.get("cachetest", key))
+                check_values(key, ringo.get("cachetest", key))
         print "Get took %dms" % ((time.time() - t) * 1000)
         
         print "Getting 10000 keys in sequential order"
@@ -159,14 +159,14 @@ def _cache_test(**kwargs):
                 random.shuffle(s)
                 for key in s:
                         for j in range(10):
-                                check_values(key, ringogw.get("cachetest", key))
+                                check_values(key, ringo.get("cachetest", key))
         print "Get took %dms" % ((time.time() - t) * 1000)
 
         print "Getting 10000 keys in random order"
         t = time.time()
         for i in range(10000):
                 key = random.choice(tail)
-                check_values(key, ringogw.get("cachetest", key))
+                check_values(key, ringo.get("cachetest", key))
         print "Get took %dms" % ((time.time() - t) * 1000)
         return True
 
@@ -264,7 +264,7 @@ def test07_addreplica(first_owner = True):
                 print "Resync didn't finish in time"
                 return False
         
-        re = ringogw.request("/mon/domains/domain?id=0x" + did)
+        re = ringo.request("/mon/domains/domain?id=0x" + did)
         repl = re[1][3]
         
         if real_owner in [r['node'] for r in repl if r['owner']][0]:
@@ -288,7 +288,7 @@ def test09_killowner():
                 return False
 
         print "Create and populate domain"
-        node, domainid = ringogw.create("killowner", 5)
+        node, domainid = ringo.create("killowner", 5)
         _put_entries("killowner", 50)
         
         kill_id = node.split('@')[0].split("-")[1]
@@ -371,11 +371,12 @@ def test10_distantsync():
 def test11_simcodeupdate():
         names = ["simcodeupdate1", "simcodeupdate2"]
         def pput():
+                rgo = ringogw.Ringo(sys.argv[1])
                 for i in range(10):
                         k = "item-%d" % i
                         v = "testitem-%d" % i
                         for name in names:
-                                ringogw.put(name, k, v, retries = 10)
+                                rgo.put(name, k, v, retries = 10)
                                         
         did1 = int(domain_id(names[0], 0), 16)
         did2 = int(domain_id(names[1], 0), 16)
@@ -388,7 +389,7 @@ def test11_simcodeupdate():
         print "Creating domains.."
 
         for name in names:
-                ringogw.create(name, 6)
+                ringo.create(name, 6)
 
         print "Restarting nodes one at time:"
         for id in ids:
@@ -424,18 +425,18 @@ def test12_extsync():
         if not _test_ring(5):
                 return False
         
-        node, domainid = ringogw.create("extsync", 6)
+        node, domainid = ringo.create("extsync", 6)
                 
         v = "!" * 1024**2
         print "Putting ten 1M values"
         for i in range(10):
-                ringogw.put("extsync", "fub-%d" % i, v, verbose = True)
+                ringo.put("extsync", "fub-%d" % i, v, verbose = True)
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
                         lambda x: x[0] == 200, 30):
                 return False
         
         replicas = [n['node'].split('-')[1].split('@')[0] for n in\
-                ringogw.request("/mon/domains/domain?id=0x" + domainid)[1][3]]
+                ringo.request("/mon/domains/domain?id=0x" + domainid)[1][3]]
 
         for repl in replicas:
                 if not _check_extfiles(repl, domainid, 10):
@@ -456,7 +457,7 @@ def test12_extsync():
         newid, p = new_node()
         print "Creating a new node", newid
         print "Putting an extra item (should go to the new node as well)"
-        ringogw.put("extsync", "extra", v, verbose = True)
+        ringo.put("extsync", "extra", v, verbose = True)
 
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
                         lambda x: check_entries(x, 6, 11), 300):
@@ -468,21 +469,23 @@ def test12_extsync():
                         return False
         return True
 
+# Simple get test: Get a single value without chunked transfer
 def test13_singleget():
         if not _test_ring(1):
                 return False
         
-        node, domainid = ringogw.create("basicget", 5)        
+        node, domainid = ringo.create("basicget", 5)        
         for i in range(5):
-                ringogw.put("basicget", "muppet-%d" % i, "nufnuf-%d" % i)
+                ringo.put("basicget", "muppet-%d" % i, "nufnuf-%d" % i)
 
         for i in range(5):
-                r = ringogw.get("basicget", "muppet-%d" % i, single = True)
+                r = ringo.get("basicget", "muppet-%d" % i, single = True)
                 if r != "nufnuf-%d" % i:
                         print "Invalid reply", r
                         return False
         return True
 
+# Get multiple values: Test chunked transfer and entry_callback
 def test14_multiget():
         def check_reply(entry, out):
                 if entry != "nufnuf-%d" % len(out): 
@@ -492,25 +495,26 @@ def test14_multiget():
         if not _test_ring(1):
                 return False
         
-        node, domainid = ringogw.create("multiget", 5)
+        node, domainid = ringo.create("multiget", 5)
         print "Putting 1000 items.."
         for i in range(1000):
-                ringogw.put("multiget", "bork", "nufnuf-%d" % i)
+                ringo.put("multiget", "bork", "nufnuf-%d" % i)
         
         print "Getting 1000 items.."
-        out = ringogw.get("multiget", "bork", entry_callback = check_reply, verbose = True)
+        out = ringo.get("multiget", "bork", entry_callback = check_reply, verbose = True)
         if len(out) != 1000:
                 raise "Invalid number of replies: %d" % len(out)
         return True
 
-        
-
+# Test that iblock cache works correctly with many iblocks
 def test15_iblockcache():
         return _cache_test()
         
+# Test that key cache works correctly with many iblocks
 def test16_keycache():
         return _cache_test(keycache = True)
 
+# Test that interleaved puts and gets work correctly with both the caches
 def test17_putget(**kwargs):
 
         keycache = 'keycache' in kwargs
@@ -522,20 +526,22 @@ def test17_putget(**kwargs):
                         return False
         
         dname = "putgettest-%s" % keycache
-        node, domainid = ringogw.create(dname, 5, **kwargs)
+        node, domainid = ringo.create(dname, 5, **kwargs)
         values = ["zing-%d-%s" % (i, keycache) for i in range(2)]
 
-        print "Putting 15050 keys.."
+        print "Putting and getting 15050 keys.."
 
         for i in range(1505):
                 key = "k-%d-%s" % (i, keycache)
                 for j in range(10):
                         for value in values:
-                                r = ringogw.put(dname, key, value)        
-                        r = ringogw.get(dname, key) 
-                        if r != values * (j + 1):
-                                raise "Invalid reply %s expected %s" %\
-                                        (r, values * (j + 1))
+                                r = ringo.put(dname, key, value)        
+                        r = ringo.get(dname, key) 
+                        c = values * (j + 1)
+                        if r != c:
+                                print key, j
+                                raise "Invalid reply %s (%d) expected %s (%d)"\
+                                        % (r, len(r), c, len(c))
         print "Results ok"
 
         if keycache:
@@ -543,23 +549,27 @@ def test17_putget(**kwargs):
         else:
                 return test17_putget(keycache = True)
 
+def single_get_check(dname, N):
+        print "Check get.."
+        for i in range(N):
+                r = ringo.get(dname, "abc-%d" % i)
+                if r != ['def-%d' % i]:
+                        raise "Invalid reply to key %s: %s" %\
+                                ("abc-%d" % i, r)
+        print "Get ok"
+
+# Test that missing or corrupted iblocks are re-generated correctly during
+# index initialization. 
 def test18_regeniblocks():
         N = 50500
-        def check_get():
-                for i in range(N):
-                        r = ringogw.get("regentest", "abc-%d" % i)
-                        if r != ['def-%d' % i]:
-                                raise "Invalid reply to key %s: %s" %\
-                                        ("abc-%d" % i, r)
-        if not _test_ring(1):
+        if not _test_ring(5):
                 return False
-        node, domainid = ringogw.create("regentest", 5)
+        node, domainid = ringo.create("regentest", 5)
         print "Putting %d entries.." % N
         for i in range(N):
-                ringogw.put("regentest", "abc-%d" % i, "def-%d" % i)
+                ringo.put("regentest", "abc-%d" % i, "def-%d" % i)
         print "Entries put"
-        check_get()
-        print "Get ok"
+        single_get_check("regentest", N)
 
         kill_id = node.split('@')[0].split("-")[1]
         print "Kill owner", kill_id
@@ -586,11 +596,9 @@ def test18_regeniblocks():
         print "Reincarnating owner"
         new_node(kill_id)
         if not _wait_until("/mon/ring/nodes",
-                        lambda x: _check_results(x, 1), 60):
+                        lambda x: _check_results(x, 5), 60):
                 return False
-        print "Check get.."
-        check_get()
-        print "Get ok"
+        single_get_check("regentest", N)
         print "Checking iblocks"
         for iblock, checksum in iblocks:
                 fname = "%s/%s" % (path, iblock)
@@ -601,28 +609,74 @@ def test18_regeniblocks():
         print "Checksums match"
         return True
 
-# 1. test that iblocks are re-generated ok: Put N iblocks, delete K iblocks, 
-#    check that re-generated iblocks are identical
-# 2. redirected get, new owner, check that get succeeds
+# Test that gets are properly redirected when a new, empty owner is spawned.
+# Note that especially interesting is the case when the new owner has resynced
+# some of the entries, but not all, and GETs still need to be redirected to get
+# the most comprehensive results.
+def test19_redirget():
+        N = 20500
+        did = domain_id("redirget", 0)
+        owner_id = real_owner = make_domain_id(int(did, 16) - 1)
+        ids = [make_domain_id(int(did, 16) + i) for i in range(1, 10)]
+       
+        print "Create 9 replica nodes first.."
+        if not _test_ring(0, 9, ids):
+                return False
 
+        print "Putting %d entries.." % N
+        node, domainid = ringo.create("redirget", 5)
+        for i in range(N):
+                ringo.put("redirget", "abc-%d" % i, "def-%d" % i)
+        single_get_check("redirget", N)
+        print "Entries went to", node
+
+        print "Creating owner node:", owner_id
+        new_node(owner_id)
+        if not _wait_until("/mon/ring/nodes",
+                lambda x: _check_results(x, 10), 30):
+                print "Ring didn't converge"
+                return False
         
-# 7. (100 domains) create N domains, put entries, killing random domains at the
-#        same time, check that all entries available in the end
+        try:
+                single_get_check("redirget", N)
+        except:
+                print "Exception"
+                while 1: pass
+        
+        print "Waiting for resync.."
+        if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: check_entries(x, 7, N), 300):
+                print "Resync failed"
+                return False
 
+        print "Killing replicas.."
+        for id in ids:
+                kill_node(id)
+
+        print "Waiting for ring to recover.."
+        if not _wait_until("/mon/ring/nodes",
+                lambda x: _check_results(x, 1), 60):
+                return False
+
+        single_get_check("redirget", N)
+        return True
+        
+        
 tests = sorted([f for f in globals().keys() if f.startswith("test")])
 
 if len(sys.argv) > 2 and sys.argv[2] == '?':
         print "Available tests:\n", "\n".join([t[7:] for t in tests])
         sys.exit(1)
 
-ringogw.sethost(sys.argv[1])
+ringo = ringogw.Ringo(sys.argv[1])
+
 for f in tests:
         prefix, testname = f.split("_", 1)
         if len(sys.argv) > 2 and testname not in sys.argv[2:]:
                 continue
         kill_node("ringotest")
-        ringogw.request("/mon/ring/reset")
-        ringogw.request("/mon/domains/reset")
+        ringo.request("/mon/ring/reset")
+        ringo.request("/mon/domains/reset")
         time.sleep(1)
         print "*** Starting", testname
         if globals()[f]():

@@ -594,6 +594,7 @@ get_infopack(InfoFile, From) ->
 
 %%% callback stubs
 
-terminate(_Reason, _State) -> {}.
+terminate(Reason, _State) -> 
+        error_logger:info_report({"Node terminates", Reason}).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.

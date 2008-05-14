@@ -85,7 +85,7 @@
 
 start(Home, DomainID, IsOwner, Prev, Next) ->
         case gen_server:start(ringo_domain, 
-                %[Home, DomainID, IsOwner], [{debug, [trace, log]}]) of
+                %[Home, DomainID, IsOwner, Prev, Next], [{debug, [trace, log]}]) of
                 [Home, DomainID, IsOwner, Prev, Next], []) of
                 {ok, Server} -> {ok, Server};
                 {error, {already_started, Server}} -> {ok, Server}
@@ -117,7 +117,8 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
                      db = none,
                      full = false,
                      sync_tree = none, 
-                     num_entries = undefined,
+                     num_entries = 0,
+                     max_repl_entries = 0,
                      sync_ids = none,
                      sync_inbox = Inbox,
                      sync_outbox = Outbox,
@@ -312,6 +313,13 @@ handle_cast({put, _, _, _, From},
         From ! {ringo_reply, DomainID, {error, domain_full}}, 
         {noreply, D};
 
+% Put to a replica: This happens if a get request is redirected to
+% a replica that re-builds an index and tries to save an iblock. The
+% request is ignored. Owner will re-build the index again by itself.
+handle_cast({put, _, _, _, _}, #domain{owner = false} = D) ->
+        {noreply, D};
+        
+
 %%%
 %%% Redirected put
 %%%
@@ -350,41 +358,55 @@ handle_cast({redir_put, _, _, {put, _, _, _, From}},
 %%% Get
 %%%
 
-% DB not open: Check the corresponding put-request for more information.
-% Redirect request to the previous node.
-handle_cast({get, Key, From}, #domain{owner = true, id = DomainID, db = none, 
-                prevnode = Prev} = D) ->
+% Redirected get: Get requests are forwarded to a replica if either
+%
+% 1. DB is not open (see the corresponding put-case for more information),
+% 2. Owner currently has less entries than a replica.
+%
+% The latter case tries to ensure that get-requests are not based on a DB file
+% that is in the middle of resyncing. Note that this doesn't guarantee that 
+% all GET requests succeed. It may happen that some entries are missing from
+% GET responses when the system is out-of-sync.
+handle_cast({get, Key, From}, #domain{owner = true, id = DomainID, db = DB, 
+        prevnode = Prev, num_entries = N, max_repl_entries = M} = D)
+                when DB == none; N < M -> 
+        %error_logger:info_report({"redir get init", Key, DB, N, M}),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
-                {get, Key, From, node(), 1}}),
+                {get, Key, From, M, node(), 1}}),
         {noreply, D};
 
 % Index not open: Now it's time to open it.
 handle_cast({get, _, _} = P, #domain{index = none, home = Home,
         dbname = DBName, info = InfoPack} = D) ->
-
         {ok, S} = ringo_indexdomain:start_link(self(), Home, DBName, InfoPack),
         handle_cast(P, D#domain{index = S});
 
 % Normal case
 handle_cast({get, Key, From}, #domain{index = Index} = D) ->
+        %error_logger:info_report({"normal get", Key}),
         gen_server:cast(Index, {get, Key, From}),
         {noreply, D};
 
 % Redirected get: Came back to the originator, or stuck in an infinite loop.
-handle_cast({get, _, From, Node, N}, #domain{id = DomainID} = D)
+handle_cast({get, _, From, _, Node, N}, #domain{id = DomainID} = D)
         when Node == node(); N > ?MAX_RING_SIZE ->
+        %error_logger:info_report({"redir get inf"}),
         From ! {ringo_reply, DomainID, {error, invalid_domain}},
         {noreply, D};
 
-% Redirected get: DB not open -> redirect to previous.
-handle_cast({get, Key, From, Node, N}, #domain{id = DomainID, db = none,
-                prevnode = Prev} = D) ->
+% Redirected get: DB not open or this replica doesn't have all the entries
+% -> redirect to previous.
+handle_cast({get, Key, From, M, Node, N}, #domain{id = DomainID, db = DB,
+        prevnode = Prev, num_entries = Num} = D) when DB == none; Num < M ->
+        
+        %error_logger:info_report({"redir get next", DB, Key, Num, M}),
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
-                {get, Key, From, Node, N + 1}}),
+                {get, Key, From, M, Node, N + 1}}),
         {noreply, D};
 
 % Redirected get: DB open, proceed as with normal get
-handle_cast({get, Key, From, _, _}, D) ->
+handle_cast({get, Key, From, _, _, _}, D) ->
+        %error_logger:info_report({"redir get match", Key}),
         handle_cast({get, Key, From}, D);
                 
 
@@ -413,7 +435,6 @@ handle_cast({repl_put, _, _, _, ODomain, _} = R, #domain{db = none} = D) ->
 handle_cast({repl_put, EntryID, Entry, {_, _, _OPid} = Owner, ODomain, N},
         #domain{id = DomainID, prevnode = Prev} = D) ->
 
-        error_logger:info_report({"repl put", EntryID, size(Entry)}),
         if N > 1 ->
                 gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                         {repl_put, EntryID, Entry, Owner, ODomain, N - 1}});
@@ -434,12 +455,18 @@ handle_cast({sync_write_entry, _, From} = Req, #domain{db = none} = D) ->
         open_or_clone(Req, From, D);
 
 handle_cast({sync_write_entry, {Entry, {}} = E, From},
-                #domain{extproc = Ext} = D) ->
-        error_logger:info_report({"External!", Entry}),
-        case ringo_reader:is_external(Entry) of
+        #domain{extproc = Ext, index = Index, db = DB} = D) ->
+        
+        {_, _, Flags, Key, Val} = ringo_reader:decode(Entry),
+        case Val of
+                {ext, _} -> Ext ! {fetch, {From, Entry}};
+                _ -> ok
+        end,
+        case proplists:is_defined(iblock, Flags) of
                 true ->
-                        error_logger:info_report({"External!"}),
-                        Ext ! {fetch, {From, Entry}};
+                        {ok, Pos} = bfile:ftell(DB),
+                        gen_server:cast(Index,
+                                {put, Key, Pos, Pos + size(Entry)});
                 false -> ok
         end,
         {noreply, do_write(E, D)};
@@ -449,7 +476,7 @@ handle_cast({update_sync_data, Tree, LeafIDs}, #domain{owner = true} = D) ->
 
 handle_cast({sync_put, SyncID, Entry, From},
         #domain{sync_inbox = Inbox} = D) ->
-        error_logger:info_report({"sync put", SyncID, From}),
+        %error_logger:info_report({"sync put", SyncID, From}),
 
         M = ets:info(Inbox, memory),
         if M > ?SYNC_BUF_MAX_WORDS ->
@@ -472,9 +499,13 @@ handle_cast({sync_get, Owner, Requests},
         %end),
         {noreply, D};        
 
-handle_cast({sync_pack, From, Pack, _Distance}, #domain{info = _InfoPack,
+handle_cast({sync_pack, From, Pack, NumEntries, _Distance}, #domain{info = _InfoPack,
         sync_ids = LeafIDs, sync_outbox = Outbox, owner = true} = D) ->
 
+        D0 = if D#domain.max_repl_entries < NumEntries ->
+                D#domain{max_repl_entries = NumEntries};
+        true -> D
+        end,
         Requests = lists:foldl(fun({Leaf, RSyncIDs}, RequestList) ->
                 if LeafIDs == none -> 
                         OSyncIDs = [];
@@ -520,7 +551,7 @@ handle_cast({sync_pack, From, Pack, _Distance}, #domain{info = _InfoPack,
         true ->
                 gen_server:cast(From, {sync_get, self(), Requests})
         end,
-        {noreply, D};
+        {noreply, D0};
 
 handle_cast({find_owner, Node, N}, #domain{id = DomainID, owner = true} = D) ->
         error_logger:info_report(
@@ -560,14 +591,14 @@ handle_cast({find_file, _, {Pid, _}, _}, D) ->
         Pid ! file_not_found,
         {noreply, D};
 
-handle_cast({get_status, From}, #domain{id = DomainID, size = Size,
-        num_entries = NumE, full = Full, owner = Owner, stats = Stats} = D) ->
+handle_cast({get_status, From}, D) ->
         From ! {status, node(), 
-                [{id, DomainID},
-                 {num_entries, NumE},
-                 {size, Size},
-                 {full, Full},
-                 {owner, Owner}] ++ ets:tab2list(Stats)},
+                [{id, D#domain.id},
+                 {num_entries, D#domain.num_entries},
+                 {max_repl_entries, D#domain.max_repl_entries},
+                 {size, D#domain.size},
+                 {full, D#domain.full},
+                 {owner, D#domain.owner}] ++ ets:tab2list(D#domain.stats)},
         {noreply, D};
 
 handle_cast({kill_domain, Reason}, D) ->
@@ -678,7 +709,6 @@ replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Prev, _Tries) ->
         Me = {os:getenv("DBGHOST"), node(), self()},
         if Prev == node() -> ok;
         true ->
-                error_logger:info_report({"replicate semd", EntryID}),
                 gen_server:cast({ringo_node, Prev}, {{domain, DomainID},
                         {repl_put, EntryID, Entry, Me, DServer, Nrepl}})
         
@@ -731,7 +761,7 @@ open_or_clone(Req, From, D) ->
 do_write(Entry, #domain{home = Home, db = DB, full = true} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
         bfile:fflush(DB),
-        D;
+        D#domain{num_entries = D#domain.num_entries + 1};
 
 do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
@@ -739,9 +769,11 @@ do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
         S = size(Entry) + Size,
         if S > ?DOMAIN_CHUNK_MAX ->
                 close_domain(Home, DB),
-                D#domain{size = S, full = true};
+                D#domain{size = S, full = true,
+                        num_entries = D#domain.num_entries + 1};
         true ->
-                D#domain{size = S, full = false}
+                D#domain{size = S, full = false,
+                        num_entries = D#domain.num_entries + 1}
         end.   
 
 close_domain(Home, DB) ->
@@ -762,8 +794,10 @@ stats_buffer_add(Stats, Key, Value) ->
 %%% callback stubs
 
 
-terminate(_Reason, #domain{db = none}) -> {};
-terminate(_Reason, #domain{db = DB}) ->
+terminate(Reason, #domain{db = none}) -> 
+        error_logger:info_report({"Terminate", Reason});
+terminate(Reason, #domain{db = DB}) ->
+        error_logger:info_report({"Terminate (close DB)", Reason}),
         bfile:fclose(DB).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.

@@ -84,7 +84,6 @@ handle_cast({get, Key, From}, #index{cache_type = iblock, db = DB,
 handle_cast({get, Key, From}, #index{cache_type = key,
         home = Home, db = DB, cur_iblock = Current} = D) ->
         
-        error_logger:info_report({"Get", Key}),
         Hash = ringo_index:dexhash(Key),
         {Lst, D0} = keycache_get(Key, D),
         {_, CL} = ringo_index:find_key(Hash, Current, false),
@@ -119,7 +118,7 @@ handle_cast({put, Key, Pos, EndPos}, #index{cur_iblock = Iblock,
 handle_cast(initialize, #index{home = Home} = D) ->
         % Find existing iblocks in the domain's home directory
         Cands = lists:keysort(1, [X || X <- lists:map(fun(F) ->
-                case string:tokens(F, "-") of
+                case string:tokens(F, "-.") of
                         [_, S, E] ->
                                 {list_to_integer(S), list_to_integer(E), F};
                         _ -> error_logger:warning_report(
@@ -127,11 +126,9 @@ handle_cast(initialize, #index{home = Home} = D) ->
                 end
         end, filelib:wildcard("iblock-*", Home)), is_tuple(X)]),
         
-        % Find out how much of the index the existing iblocks cover. StartPos
-        % denotes the last byte covered by an iblock (holes are not allowed
-        % in the coverage). Load iblocks and process them as they would have
-        % been just created.
-        error_logger:info_report({"Candidates", Cands}),
+        % Find out how much of the index the existing iblocks cover (holes are
+        % not allowed in the coverage). Load iblocks and process them as they 
+        % would have been just created.
         {_, D0} = lists:foldl(fun
                 ({S, E, F}, {Pos, Dx} = X) when S == Pos ->
                         Path = filename:join(Home, F),
@@ -142,9 +139,6 @@ handle_cast(initialize, #index{home = Home} = D) ->
                         end;
                 (_, X) -> X
         end, {0, D}, Cands),
-        
-        error_logger:info_report({"Ca", Cands}),
-
         % Re-index the rest
         {noreply, index_iblock(D0, ?IBLOCK_SIZE)}.
 
@@ -152,7 +146,6 @@ index_iblock(D, N) when N < ?IBLOCK_SIZE -> D;
 index_iblock(#index{dbname = DBName, cur_offs = StartPos} = D, _) ->
         {N, Dex, EndPos} = ringo_index:build_index(DBName, StartPos,
                 ?IBLOCK_SIZE),
-        error_logger:info_report({"Build index N", N, "EndPos", EndPos}),
         D0 = save_iblock(D#index{cur_iblock = Dex, cur_start = StartPos,
                 cur_offs = EndPos, cur_size = N}),
         index_iblock(D0, N).
@@ -205,10 +198,13 @@ update_cache(SIblock, #index{cache_type = iblock, cache = Cache} = D) ->
         D#index{cache = [SIblock|Cache]};
 
 update_cache(SIblock, #index{cache_type = key, cache = {Cache, LRU}} = D) ->
-        NC = lists:foldl(fun({Key, {Sze, V}}, C) ->
+        error_logger:info_report({"Ipdate cache"}),
+        NC = lists:foldl(fun({Key, {Sze, V} = X}, C) ->
                 {_, L} = ringo_index:find_key(Key, SIblock, false),
-                if L == [] -> C;
-                true -> gb_trees:insert(Key, {Sze + size(L), V ++ [L]}, C)
+                if L == [] ->
+                        gb_trees:insert(Key, X, C);
+                true ->  
+                        gb_trees:insert(Key, {Sze + size(L), V ++ [L]}, C)
                 end
         end, gb_trees:empty(), gb_trees:to_list(Cache)),
         D#index{cache = {NC, LRU}}.
@@ -221,8 +217,8 @@ keycache_get(Key, #index{cache = {Cache, _}} = D) ->
         update_keycache(Key, gb_trees:lookup(Key, Cache), D).
 
 % cache hit
-update_keycache(Key, {value, {Sze, Lst}}, #index{cache = {Cache, LRU}} = D) ->
-        {Lst, D#index{cache = {Cache, lrucache:update({Key, Sze}, LRU)}}};
+update_keycache(Key, {value, {_, Lst}}, #index{cache = {Cache, LRU}} = D) ->
+        {Lst, D#index{cache = {Cache, lrucache:update(Key, LRU)}}};
 
 % cache miss
 update_keycache(Key, none, #index{home = Home, iblocks = Iblocks,
@@ -256,7 +252,8 @@ keycache_evict(CacheSze, EntrySze, #index{cache = {Cache, LRU}} = D) ->
         X = lrucache:get_lru(LRU),
         if X == nil -> D;
         true ->
-                {{Key, Sze}, LRU0} = X, 
+                {Key, LRU0} = X, 
+                {Sze, _} = gb_trees:get(Key, Cache),
                 keycache_evict(CacheSze - Sze, EntrySze, D#index{cache =
                         {gb_trees:delete(Key, Cache), LRU0}})
         end.

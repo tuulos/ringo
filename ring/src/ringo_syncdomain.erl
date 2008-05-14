@@ -27,7 +27,7 @@ resync(This, owner) ->
         
         DBN = if DB == none -> empty; true -> DBName end,
 
-        {[[Root]|_] = Tree, LeafIDsX} = update_sync_tree(This, DBN),
+        {[[Root]|_] = Tree, LeafIDsX, _} = update_sync_tree(This, DBN),
         gen_server:cast(This, {update_sync_data, Tree, LeafIDsX}),
         ringo_domain:stats_buffer_add(Stats, synctree_root, Root),
         flush_sync_outbox(This, DBN);
@@ -43,7 +43,7 @@ resync(This, replica) ->
         
         DBN = if DB == none -> empty; true -> DBName end,
 
-        {[[Root]|_] = Tree, _} = update_sync_tree(This, DBN),
+        {[[Root]|_] = Tree, _, NumEntries} = update_sync_tree(This, DBN),
         ringo_domain:stats_buffer_add(Stats, synctree_root, Root),
         {ok, {_, OPid}, Distance} = find_owner(DomainID),
         % BUG: Shouldn't the domain die if find_owner fails? Now it seems
@@ -54,7 +54,8 @@ resync(This, replica) ->
         if DiffLeaves == [] -> ok;
         true ->
                 SyncIDs = ringo_sync:collect_leaves(DiffLeaves, DBName),
-                gen_server:cast(OPid, {sync_pack, This, SyncIDs, Distance})
+                gen_server:cast(OPid,
+                        {sync_pack, This, SyncIDs, NumEntries, Distance})
         end,
         flush_sync_outbox(This, DBN).
 
@@ -81,8 +82,8 @@ update_sync_tree(This, DBName) ->
         {ok, Inbox} = gen_server:call(This, {flush_syncbox, sync_inbox}),
         %error_logger:info_report({"INBOX", Inbox}),
         {LeafHashes, LeafIDs} = ringo_sync:make_leaf_hashes_and_ids(DBName),
-        gen_server:cast(This, {update_num_entries,
-                ringo_sync:count_entries(LeafIDs)}),
+        NumEntries = ringo_sync:count_entries(LeafIDs),
+        gen_server:cast(This, {update_num_entries, NumEntries}),
         %error_logger:info_report({"LeafIDs", LeafIDs}),
         Entries = lists:filter(fun({SyncID, _, _}) ->
                 not ringo_sync:in_leaves(LeafIDs, SyncID)
@@ -91,16 +92,16 @@ update_sync_tree(This, DBName) ->
                 LeafHashes, LeafIDs),
         Tree = ringo_sync:build_merkle_tree(LeafHashesX),
         ets:delete(LeafHashesX),
-        {Tree, LeafIDsX}.
+        {Tree, LeafIDsX, NumEntries}.
 
 % flush_sync_inbox writes entries that have been sent to this replica
 % (or owner) to disk and updates the leaf hashes accordingly
 flush_sync_inbox(_, [], LeafHashes, LeafIDs) ->
-        error_logger:info_report({"flush inbox (empty)"}),
+        %error_logger:info_report({"flush inbox (empty)"}),
         {LeafHashes, LeafIDs};
 
 flush_sync_inbox(This, [{SyncID, Entry, From}|Rest], LeafHashes, LeafIDs) ->
-        error_logger:info_report({"flush inbox"}),
+        %error_logger:info_report({"flush inbox"}),
         ringo_sync:update_leaf_hashes(LeafHashes, SyncID),
         LeafIDsX = ringo_sync:update_leaf_ids(LeafIDs, SyncID),
         gen_server:cast(This, {sync_write_entry, Entry, From}),
@@ -109,11 +110,11 @@ flush_sync_inbox(This, [{SyncID, Entry, From}|Rest], LeafHashes, LeafIDs) ->
 % flush_sync_outbox sends entries that exists on this replica or owner to
 % another node that requested the entry
 flush_sync_outbox(_, empty) ->
-        error_logger:info_report({"flush outbox (empty)"}),
+        %error_logger:info_report({"flush outbox (empty)"}),
         ok;
 
 flush_sync_outbox(This, DBName) ->
-        error_logger:info_report({"flush outbox"}),
+        %error_logger:info_report({"flush outbox"}),
         {ok, Outbox} = gen_server:call(This, {flush_syncbox, sync_outbox}),
         flush_sync_outbox_1(This, DBName, Outbox).
 
