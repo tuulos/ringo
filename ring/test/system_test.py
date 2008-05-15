@@ -41,20 +41,24 @@ def check_entries(r, nrepl, nentries):
         roots = []
         for node in r[1][3]:
                 num = node["num_entries"]
-                if num == "undefined" or int(num) != nentries:
+                if nentries != None and\
+                        (num == "undefined" or int(num) != nentries):
                         return False
                 root = -1
                 if "synctree_root" in node:
                         root = node["synctree_root"][0][1]
-                        roots.append(root)
+                        roots.append((root, node["size"]))
                 if node["owner"]:
                         owner_root = root
+                        owner_size = node["size"]
 
         if len(roots) != nrepl:
                 return False
 
         # check that root hashes match
-        return [r for r in roots if r != owner_root] == []
+        return [(r, s) for r, s in roots if r != owner_root\
+                or s != owner_size] == []
+               
 
 def _check_results(reply, num):
         if reply[0] != 200:
@@ -668,10 +672,11 @@ def _check_chunks(x, num_chunks):
                 return False
         return True
         
-        
+# Basic chunking test: Put so many items that the maximum chunk size is
+# exceeded multiple times. Check that the number of chunk is correct and
+# all the items are retrieved ok.
 def test20_manychunks():
         chunk_size = 500 * 1024
-        # how many items are guaranteed to open new chunks?
         N = (chunk_size / len("abc-0def-0")) * 2
         orig_max = os.environ['DOMAIN_CHUNK_MAX']
         os.environ['DOMAIN_CHUNK_MAX'] = str(chunk_size)
@@ -685,6 +690,10 @@ def test20_manychunks():
                 ringo.put("manychunks", "abc-%d" % i, "def-%d" % i)
         print "Put took %dms" % ((time.time() - t) * 1000)
         
+        # There's nothing special in 12 chunks. It just seems that it's
+        # the correct number for this chunk size and these entries. If
+        # the on-disk entry format changes, this number is likely to 
+        # change too.
         if not _wait_until("/mon/domains/node?name=" + node,
                 lambda x: _check_chunks(x, 12), 30):
                 print "Couldn't find 12 chunks"
@@ -697,12 +706,107 @@ def test20_manychunks():
         os.environ['DOMAIN_CHUNK_MAX'] = orig_max
         return True
 
+# Test chunks with replicas. Put many items, as in the manychunks test.
+# Check that replicas are in sync and have the same size with the owner.
+def test21_chunkrepl():
+        chunk_size = 500 * 1024
+        N = (chunk_size / len("abc-0def-0")) * 2
+        orig_max = os.environ['DOMAIN_CHUNK_MAX']
+        os.environ['DOMAIN_CHUNK_MAX'] = str(chunk_size)
+        if not _test_ring(10):
+                return False
+        node, domainid = ringo.create("chunkrepl", 5)
+        print "Putting %d items with replicas" % N
+        t = time.time()
+        for i in range(N):
+                ringo.put("chunkrepl", "abc-%d" % i, "def-%d" % i)
+        print "Put took %dms" % ((time.time() - t) * 1000)
+        
+        code, reply = ringo.request("/mon/domains/domain?id=0x" + domainid)
+        orig_size = reply[3][0]['size']
+
+        for i in range(12):
+                chunkid = domain_id("chunkrepl", 0)
+                print "Checking chunk", i
+                # Make sure that all replicas for this chunk are of equal size
+                if not _wait_until("/mon/domains/domain?id=0x" + chunkid,
+                                lambda x: check_entries(x, 6, None), 300):
+                        print "Resync didn't finish in time"
+                        return False
+                # Check that the size is the same for all the replicas, except
+                # the last one
+                if i < 11:
+                        code, reply = ringo.request("/mon/domains/domain?id=0x" + chunkid)
+                        chunk_size = reply[3][0]['size']
+                        if chunk_size != orig_size:
+                                print "Chunk %d has incorrect size %d, should be %d" %\
+                                        (i, chunk_size, orig_size)
+                                return False
+                print "Chunk ok"
+        t = time.time()
+        single_get_check("chunkrepl", N)
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        os.environ['DOMAIN_CHUNK_MAX'] = orig_max
+        return True        
 
 
+# Check that chunk size is re-computed correctly after a node is
+# re-instantiated.
+def test22_chunksizes():
+        chunk_size = 500 * 1024
+        orig_max = os.environ['DOMAIN_CHUNK_MAX']
+        os.environ['DOMAIN_CHUNK_MAX'] = str(chunk_size)
+        if not _test_ring(1):
+                return False
+        node, domainid = ringo.create("chunksizes", 5)
+        print "Filling about 60% of the chunk.."
+        for i in range(5000):
+                ringo.put("chunksizes", "abc-%d" % i, "def-%d" % i)
+        
+        if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                        lambda x: check_entries(x, 1, 5000), 300):
+                print "Put failed"
+                return False
+        
+        code, reply = ringo.request("/mon/domains/domain?id=0x" + domainid)
+        orig_size = reply[3][0]['size']
 
+        print "Kill node.."
+        kill_node(domainid)
+        time.sleep(1)
+        print "Reinstantiate it.."
+        new_node(domainid)
+        print "Waiting for ring to recover.."
+        if not _wait_until("/mon/ring/nodes",
+                lambda x: _check_results(x, 1), 60):
+                return False
+        
+        code, reply = ringo.request("/mon/domains/domain?id=0x" + domainid)
+        new_size = reply[3][0]['size']
+        if orig_size != new_size:
+                print "Chunk size was %d bytes before and after reinstation "\
+                      "%d bytes. No good." % (orig_size, new_size)
+                return False
+        print "Sizes match. Great!"
 
-# - put, exceed chunk limit, check that new chunk is created. Check get.
-# - put to 50% chunk limit, kill node, put 50%, check that new chunk is 
+        print "Putting more items.."
+        for i in range(5000, 10000):
+                ringo.put("chunksizes", "abc-%d" % i, "def-%d" % i)
+        print "Checking chunks.."
+        if not _wait_until("/mon/domains/node?name=" + node,
+                lambda x: _check_chunks(x, 2), 30):
+                print "Couldn't find two chunks"
+                return False
+        single_get_check("chunksizes", 10000)
+        os.environ['DOMAIN_CHUNK_MAX'] = orig_max
+        return True
+
+        
+
+# X put, exceed chunk limit, check that new chunk is created. Check get.
+# X put with replicas, exceed chunk limit, wait to converge, check that sizes
+#   match
+# X put to 50% chunk limit, kill node, put 50%, check that new chunk is 
 #   created, kill node, put 50%, check that two chunks exist (big values too)
 # - make node A, put 90% entries, kill A. make node B put 90%, restart A.
 #   After resyncing owner should be 180% full (only one chunk). Put should

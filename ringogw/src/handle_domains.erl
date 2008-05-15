@@ -3,13 +3,11 @@
 
 op("node", [{"name", NodeS}|_]) ->
         Node = list_to_existing_atom(NodeS),
-        {json, [fetch_domaininfo(X) || X <- 
-                ets:lookup(infopack_cache, {node, Node})]};
+        {json, [fetch_domaininfo(X) || X <- infopack_lookup({node, Node})]};
 
 op("domain", [{"name", NameS}|_]) ->
         Name = list_to_binary(NameS),
-        {json, [fetch_domaininfo(X) || X <-
-                ets:lookup(infopack_cache, {name, Name})]};
+        {json, [fetch_domaininfo(X) || X <- infopack_lookup({name, Name})]};
 
 op("domain", [{"id", [$0, $x|IdS]}|_]) ->
         op("domain", [{"id", integer_to_list(
@@ -18,8 +16,7 @@ op("domain", [{"id", [$0, $x|IdS]}|_]) ->
 op("domain", [{"id", IdS}|_]) ->
         DomainID = list_to_integer(IdS),
        
-        [{_, {Name, _, Chunk}}|_] = Repl =
-                ets:lookup(infopack_cache, {id, DomainID}),
+        [{_, {Name, _, Chunk}}|_] = Repl = infopack_lookup({id, DomainID}),
         Nodes = [Node || {_, {_, Node, _}} <- Repl],
         
         gen_server:abcast(Nodes, ringo_node, {{domain, DomainID},
@@ -39,8 +36,7 @@ op("reset", _Query) ->
         {json, {ok, <<"killed">>}}.
 
 fetch_domaininfo({_, DomainID}) ->
-        [{_, {Name, Node, Chunk}}|_] = Repl =
-                ets:lookup(infopack_cache, {id, DomainID}),
+        [{_, {Name, Node, Chunk}}|_] = Repl = infopack_lookup({id, DomainID}),
         Active = case catch ets:lookup(active_domains, DomainID) of
                 [{_, A}] -> A;
                 _ -> false
@@ -51,6 +47,12 @@ fetch_domaininfo({_, DomainID}) ->
 start_check_domains() ->
         {ok, spawn_link(fun() -> register(check_domains, self()),
                 check_domains() end)}.
+
+infopack_lookup(Key) ->
+        case ets:lookup(infopack_cache, Key) of
+                [] -> throw({http_error, 404, <<"Unknown domain">>});
+                X -> X
+        end.
 
 check_domains() ->
         catch ets:new(infopack_cache, [named_table, bag]),
