@@ -15,4 +15,5 @@
 
 -record(domain, {this, owner, home, host, id, db, size, full, num_entries,
         sync_tree, sync_ids, sync_inbox, sync_outbox, dbname, stats, info,
-        nextnode, prevnode, extproc, index, max_repl_entries}).
+        nextnode, prevnode, extproc, index, max_repl_entries,
+        domain_chunk_max}).

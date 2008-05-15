@@ -14,6 +14,9 @@ chunked_reply(Sender, ReplyGen, N) ->
                 timeout ->
                         Sender(encode_chunk(<<>>, <<"timeout">>)),
                         Sender(encode_chunk(done));
+                invalid_domain ->
+                        Sender(encode_chunk(<<>>, <<"invalid domain">>)),
+                        Sender(encode_chunk(done));
                 {'EXIT', Error} ->
                         error_logger:error_report(
                                 {"Chunked result generator failed", Error}),

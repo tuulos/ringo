@@ -108,11 +108,15 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         process_flag(trap_exit, true),
         ExtProc = spawn_link(ringo_external, fetch_external, [Path]),
 
+        ChunkLimit = ringo_util:get_iparam(
+                "DOMAIN_CHUNK_MAX", ?DOMAIN_CHUNK_MAX),
+
         D0 = #domain{this = self(),
                      owner = IsOwner,
                      home = Path, 
                      dbname = filename:join(Path, "data"),
                      host = net_adm:localhost(),
+                     domain_chunk_max = ChunkLimit,
                      id = DomainID, 
                      db = none,
                      full = false,
@@ -215,11 +219,13 @@ handle_call({get_file_handle, ExtFile}, _, #domain{home = Home} = D) ->
 
               
 %%%
-%%% Basic domain operations: Create, put, get 
+%%% Create
 %%%
 
 handle_cast({new_domain, Name, Chunk, From, Params},
-        #domain{id = DomainID} = D) ->
+        #domain{id = DomainID, db = none} = D) ->
+        
+        error_logger:info_report({"Create", Chunk}),
         
         % Remember to update the flags in invalid_domain messages below
         % if InfoPack changes!
@@ -238,6 +244,11 @@ handle_cast({new_domain, Name, Chunk, From, Params},
                         From ! {ringo_reply, DomainID, {ok, {node(), self()}}},
                         {noreply, NewD}
         end;
+
+handle_cast({new_domain, _, _, From, _}, D) ->
+        error_logger:info_report({"Create, but exists"}),
+        From ! {ringo_reply, D#domain.id, {error, eexist}},
+        {noreply, D};
 
 %%%
 %%% Put
@@ -313,7 +324,8 @@ handle_cast({put, _, _, _, From},
         #domain{id = DomainID, owner = true, full = true} = D) ->
 
         Chunk = proplists:get_value(chunk, D#domain.info),
-        From ! {ringo_reply, DomainID, {error, domain_full, Chunk}}, 
+        Flags = lists:sublist(D#domain.info, 3),
+        From ! {ringo_reply, DomainID, {error, domain_full, Chunk, Flags}}, 
         {noreply, D};
 
 % Put to a replica: This happens if a get request is redirected to
@@ -331,10 +343,7 @@ handle_cast({put, _, _, _, _}, #domain{owner = false} = D) ->
 handle_cast({redir_put, Owner, N, {put, _, _, _, From}},
         #domain{id = DomainID} = D) when Owner == node(); N > ?MAX_RING_SIZE ->
 
-        % Make sure that the Flags list matches with the InfoPack definition
-        % above
-        Flags = lists:sublist(D#domain.info, 3),
-        From ! {ringo_reply, DomainID, {error, invalid_domain, Flags}},
+        From ! {ringo_reply, DomainID, {error, invalid_domain}},
         {noreply, D};
 
 % no domain on this node, forward
@@ -357,8 +366,11 @@ handle_cast({redir_put, Owner, _, {put, Key, Value, Flags, From}},
 handle_cast({redir_put, _, _, {put, _, _, _, From}},
         #domain{id = DomainID, full = true} = D) ->
         
+        % Make sure that the Flags list matches with the InfoPack definition
+        % above
+        Flags = lists:sublist(D#domain.info, 3),
         Chunk = proplists:get_value(chunk, D#domain.info),
-        From ! {ringo_reply, DomainID, {error, domain_full, Chunk}},
+        From ! {ringo_reply, DomainID, {error, domain_full, Chunk, Flags}},
         {noreply, D};
 
 %%%
@@ -393,6 +405,7 @@ handle_cast({get, Key, From}, #domain{index = Index, info = Info} = D) ->
         %error_logger:info_report({"normal get", Key}),
         if D#domain.full == true ->
                 Chunk = proplists:get_value(chunk, Info),
+                %error_logger:info_report({"Full", Key, Chunk}),
                 From ! {ringo_get, full, Chunk};
         true -> ok
         end,
@@ -400,11 +413,14 @@ handle_cast({get, Key, From}, #domain{index = Index, info = Info} = D) ->
         {noreply, D};
 
 % Redirected get: Came back to the originator, or stuck in an infinite loop.
-handle_cast({get, _, From, _, Node, N}, #domain{id = DomainID} = D)
+handle_cast({get, _, From, _, Node, N}, D)
         when Node == node(); N > ?MAX_RING_SIZE ->
         %error_logger:info_report({"redir get inf"}),
-        From ! {ringo_reply, DomainID, {error, invalid_domain}},
-
+        Chunk = proplists:get_value(chunk, D#domain.info),
+        if Chunk == 0 ->
+                From ! {ringo_get, invalid_domain};
+        true -> ok
+        end,
         % If we end up here, we couldn't find a replica that has more and
         % equal number of entries than specified by the owner's
         % max_repl_entries record. This happens if the replica that announced
@@ -781,11 +797,16 @@ do_write(Entry, #domain{home = Home, db = DB, full = true} = D) ->
         bfile:fflush(DB),
         D#domain{num_entries = D#domain.num_entries + 1};
 
-do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
+do_write({E, Ext} = Entry, #domain{db = DB, home = Home} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
         bfile:fflush(DB),
-        S = size(Entry) + Size,
-        if S > ?DOMAIN_CHUNK_MAX ->
+        if Ext == {} ->
+                S = iolist_size(E) + D#domain.size;
+        true ->
+                {_, V} = Ext,
+                S = iolist_size(E) + size(V) + D#domain.size
+        end,
+        if S > D#domain.domain_chunk_max ->
                 close_domain(Home, DB),
                 D#domain{size = S, full = true,
                         num_entries = D#domain.num_entries + 1};
@@ -795,7 +816,7 @@ do_write(Entry, #domain{db = DB, home = Home, size = Size} = D) ->
         end.   
 
 close_domain(Home, DB) ->
-        ok = bfile:fclose(DB),
+        bfile:fclose(DB),
         CFile = filename:join(Home, "closed"),
         ok = file:write_file(CFile, <<>>), 
         ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).

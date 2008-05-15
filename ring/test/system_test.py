@@ -7,7 +7,7 @@ conn = None
 
 os.environ['RESYNC_INTERVAL'] = '10000'
 os.environ['CHECK_EXT_INTERVAL'] = '10000'
-
+os.environ['DOMAIN_CHUNK_MAX'] = str(100 * 1024**2)
 
 def new_node(id = None):
         global node_id
@@ -660,6 +660,53 @@ def test19_redirget():
 
         single_get_check("redirget", N)
         return True
+
+def _check_chunks(x, num_chunks):
+        if x[0] != 200:
+                return False
+        if len(x[1]) != num_chunks:
+                return False
+        return True
+        
+        
+def test20_manychunks():
+        chunk_size = 500 * 1024
+        # how many items are guaranteed to open new chunks?
+        N = (chunk_size / len("abc-0def-0")) * 2
+        orig_max = os.environ['DOMAIN_CHUNK_MAX']
+        os.environ['DOMAIN_CHUNK_MAX'] = str(chunk_size)
+        if not _test_ring(1):
+                return False
+        node, domainid = ringo.create("manychunks", 5)
+        
+        print "Putting %d items" % N
+        t = time.time()
+        for i in range(N):
+                ringo.put("manychunks", "abc-%d" % i, "def-%d" % i)
+        print "Put took %dms" % ((time.time() - t) * 1000)
+        
+        if not _wait_until("/mon/domains/node?name=" + node,
+                lambda x: _check_chunks(x, 12), 30):
+                print "Couldn't find 12 chunks"
+                return False
+        
+        print "Got a correct number of chunks"
+        t = time.time()
+        single_get_check("manychunks", N)
+        print "Get took %dms" % ((time.time() - t) * 1000)
+        os.environ['DOMAIN_CHUNK_MAX'] = orig_max
+        return True
+
+
+
+
+
+# - put, exceed chunk limit, check that new chunk is created. Check get.
+# - put to 50% chunk limit, kill node, put 50%, check that new chunk is 
+#   created, kill node, put 50%, check that two chunks exist (big values too)
+# - make node A, put 90% entries, kill A. make node B put 90%, restart A.
+#   After resyncing owner should be 180% full (only one chunk). Put should
+#   create a new chunk.
         
         
 tests = sorted([f for f in globals().keys() if f.startswith("test")])

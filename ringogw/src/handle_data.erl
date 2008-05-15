@@ -59,7 +59,7 @@ op([Domain, Key], Params, Value) ->
         PParams = parse_params(Params, ?PUT_DEFAULTS),
         Flags = parse_flags(PParams, ?PUT_FLAGS),
         Msg = {put, list_to_binary(Key), Value, Flags, self()},
-        chunk_put(Domain, Msg, proplists:get_value(timeout, PParams));
+        chunk_put(Domain, Msg, proplists:get_value(timeout, PParams), 0);
 
 
 op(_, _, _) ->
@@ -99,7 +99,7 @@ op(_, _) ->
 %%% Chunked put
 %%%
 
-chunk_put(Domain, Msg, T) ->
+chunk_put(Domain, Msg, T, NumTries) ->
         {Chunk, DomainID} = chunk_id(Domain),
         ok = ringo_send(DomainID, Msg),
         case ringo_receive(DomainID, T) of
@@ -108,19 +108,32 @@ chunk_put(Domain, Msg, T) ->
                         {json, {ok, Node, formatid(DomainID),
                                 formatid(EntryID)}};
                 % Domain doesn't exist
-                {error, invalid_domain, _} when Chunk == 0 ->
+                {error, invalid_domain} when Chunk == 0 ->
                         {json, {error, <<"Domain doesn't exist">>}};
-                % Previous chunk was full and the next chunk is still
-                % non-existing. Create it.
-                {error, invalid_domain, Flags} ->
-                        ok = ringo_send(DomainID, 
-                                {new_domain, Domain, Chunk, self(), Flags}),
-                        {ok, _} = ringo_receive(DomainID, T),
-                        chunk_put(Domain, Msg, T);
+                % A new chunk should have been created by the
+                % domain_full case below. If we end up here, something
+                % went wrong there. We reset the chunk cache, try 
+                % again, and hope that a subsequent put that gets a
+                % domain_full reply will create the chunk correctly.
+                {error, invalid_domain} when NumTries == 0 ->
+                        chunk_reset(Domain),
+                        chunk_put(Domain, Msg, T, 1);
+                % Resetting didn't help. Hopeless.
+                {error, invalid_domain} ->
+                        throw({'EXIT', "Broken domain"});
                 % Chunk is full. Try the next chunk.
-                {error, domain_full, Chunk} ->
-                        chunk_full(Domain, Chunk),
-                        chunk_put(Domain, Msg, T);
+                {error, domain_full, Chunk, Flags} ->
+                        {NChunk, ChunkID} = chunk_full(Domain, Chunk),
+                        % Try to create the next chunk -- it may well exist
+                        % already
+                        ok = ringo_send(ChunkID,
+                                {new_domain, Domain, NChunk, self(), Flags}),
+                        case ringo_receive(ChunkID, T) of
+                                {ok, _} -> ok;
+                                {error, eexist} -> ok;
+                                Error -> throw({'EXIT', Error})
+                        end,
+                        chunk_put(Domain, Msg, T, 0);
                 Error ->
                         error_logger:warning_report(
                                 {"Unknown put reply", Error}),
@@ -149,12 +162,14 @@ ringo_receive_chunked(single, Req, N, Timeout) ->
                 {ringo_get, {entry, E}} ->
                         {data, E};
                 {ringo_get, done} when N == 0 ->
-                        throw({http_error, 404, <<"Not found">>});
+                        throw({http_error, 404, <<"Key not found">>});
                 {ringo_get, done}  ->
                         ringo_receive_chunked(single, Req, N - 1, Timeout);
                 {ringo_get, full, Chunk} ->
                         Req(Chunk + 1),
-                        ringo_receive_chunked(single, Req, N + 1, Timeout)
+                        ringo_receive_chunked(single, Req, N + 1, Timeout);
+                {ringo_get, invalid_domain} ->
+                        throw({http_error, 404, <<"Invalid domain">>})
         after Timeout ->
                 throw({http_error, 408, <<"Request timeout">>})
         end;
@@ -167,7 +182,8 @@ ringo_receive_chunked(many, Req, _, Timeout) ->
                         {ringo_get, done} -> {next, N - 1};
                         {ringo_get, full, Chunk} ->
                                 Req(Chunk + 1),
-                                {next, N + 1}
+                                {next, N + 1};
+                        {ringo_get, invalid_doamin} -> invalid_domain
                 after Timeout -> timeout
                 end
         end}.
@@ -252,8 +268,14 @@ chunk_id(Domain) ->
 
 chunk_full(Domain, Chunk) ->
         DomainID = ringo_util:domain_id(Domain, 0),
-        ChunkID = ringo_util:domain_id(Domain, Chunk + 1),
-        ets:insert(chunk_cache, {DomainID, Chunk + 1, ChunkID}).
+        NChunk = Chunk + 1,
+        ChunkID = ringo_util:domain_id(Domain, NChunk),
+        ets:insert(chunk_cache, {DomainID, NChunk, ChunkID}),
+        {NChunk, ChunkID}.
+
+chunk_reset(Domain) ->
+        DomainID = ringo_util:domain_id(Domain, 0),
+        ets:delete(chunk_cache, DomainID).
 
 start_chunk_cache() ->
         {ok, spawn_link(fun() ->
