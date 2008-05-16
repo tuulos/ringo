@@ -1,5 +1,5 @@
 -module(ringo_external).
--export([fetch_external/1, check_external/1]).
+-export([fetch_external/2, check_external/1]).
 
 -include("ringo_store.hrl").
 
@@ -7,27 +7,32 @@
 %%% files to this node as a part of the syncing process. In the normal put / 
 %%% replica put case this is not needed.
 
-fetch_external(Home) ->
-        fetch_external(Home, [], {none, none}).
+fetch_external(Domain, Home) ->
+        fetch_external(Domain, Home, [], {none, none}).
 
-fetch_external(Home, [{_, {_, TmpFile, _}} = Entry|FetchList], {none, none}) ->
+fetch_external(Domain, Home, [{_, {_, TmpFile, _}} = Entry|FetchList],
+        {none, none}) ->
+
         {_, Ref} = spawn_monitor(fun() -> fetch(Entry) end),
-        fetch_external(Home, FetchList, {Ref, TmpFile});               
+        fetch_external(Domain, Home, FetchList, {Ref, TmpFile});               
 
-fetch_external(Home, FetchList, {Worker, TmpFile} = P) ->
+fetch_external(Domain, Home, FetchList, {Worker, TmpFile} = P) ->
         receive
                 {fetch, {From, Entry}} ->
-                        fetch_external(Home, [{From,
+                        fetch_external(Domain, Home, [{From,
                                 parse_entry(Home, Entry)}|FetchList], P);
-                {'DOWN', Worker, _, _, normal} ->
+                {'DOWN', Worker, _, _, normal} when FetchList == []->
                         error_logger:info_report(
                                 {"File", TmpFile, "fetched ok"}),
-                        fetch_external(Home, FetchList, {none, none});
+                        gen_server:cast(Domain, update_domain_size),
+                        fetch_external(Domain, Home, FetchList, {none, none});
+                {'DOWN', Worker, _, _, normal} ->
+                        fetch_external(Domain, Home, FetchList, {none, none}); 
                 {'DOWN', Worker, _, _, Reason} ->
                         error_logger:info_report(
                                 {"File", TmpFile, "error", Reason}),
                         file:delete(TmpFile),
-                        fetch_external(Home, FetchList, {none, none})
+                        fetch_external(Domain, Home, FetchList, {none, none})
         end.
 
 parse_entry(Home, Entry) ->
@@ -70,12 +75,20 @@ check_external(This) ->
         error_logger:info_report({"Check external starts"}),
         #domain{dbname = DBName, stats = Stats, home = Home, extproc = Ext} 
                 = gen_server:call(This, get_current_state),
+        % Note that this doesn't sync iblocks since ringo_reader:fold() ignores
+        % them. If ringo_reader:fold() gets a flag that allows iblocks to be
+        % included in the iteration, we could sync them here as well.
         {NExt, NMiss, _} = ringo_reader:fold(fun(_, _, _, _, Entry, Nfo) ->
                 check_entry(ringo_reader:is_external(Entry), 
                         Home, Entry, This, Nfo, Ext)
         end, {0, 0, none}, DBName),
         error_logger:info_report({"Check external finishes:",
                 NExt, "external", NMiss, "missing"}),
+        if NMiss > 0 ->
+                error_logger:info_report({"Update domain size"}),
+                gen_server:cast(This, update_domain_size);
+        true -> ok
+        end,
         ringo_domain:stats_buffer_add(Stats, external_entries, {NExt, NMiss}).
 
 % internal entry, do nothing

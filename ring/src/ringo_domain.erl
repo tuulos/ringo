@@ -1,15 +1,4 @@
 
-% TODO:
-% 1. Put with replicas works
-% 2. Simple syncing works (small items)
-% 3. Syncing works (large items)
-% 4. New replica node from the scratch 
-% 5. New node, owner redirect (invalid domain)
-% 6. Simple chunking: close, open a new chunk, redirect request
-% 7. Put with a closed chunk
-% 8. Syncing a closed chunk
-
-
 % motto:
 % in the worst case data will be lost. Aim at a good average case and try to
 % ensure that it is possible to salvage data by hand after a catastrophic
@@ -20,14 +9,6 @@
 %
 % Don't try to make the worst case (catastrophic failure) disappear. Try to
 % minimize its effects instead.
-
-% opportunistic replication:
-% 1. replicate, wait for replies
-% 2. if no replies are received in Q secods, send the request again with
-%    duplicate bit on (ring may have changed / healed during the past Q
-%    seconds)
-% 3. if the step 2 repeats C times, request fails and data is (possibly) lost
-
 
 
 % - Why sync_inbox is needed:
@@ -49,8 +30,6 @@
 % requests from several replicas so that they can be served with a single 
 % scan over the DB file.
 %
-
-% what if the domain is closed (don't make the DB read-only)
 
 % What happens with duplicate SyncIDs? -- Collisions should be practically
 % impossible when using 64bit SyncIDs (Time + Random). However, a duplicate
@@ -74,9 +53,9 @@
 -define(DOMAIN_CHUNK_MAX, 104857600). % 100MB
 -define(SYNC_BUF_MAX_WORDS, 1000000).
 
--define(CHECK_EXTERNAL_INTERVAL, 30000). % make this longer!
--define(RESYNC_INTERVAL, 30000). % make this longer!
--define(GLOBAL_RESYNC_INTERVAL, 30000). % make this longer!
+-define(CHECK_EXTERNAL_INTERVAL, 600000).
+-define(RESYNC_INTERVAL, 300000).
+-define(GLOBAL_RESYNC_INTERVAL, 600000). 
 -define(STATS_WINDOW_LEN, 5).
 
 % replication
@@ -106,7 +85,7 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
                 erlang:integer_to_list(DomainID, 16)),
                
         process_flag(trap_exit, true),
-        ExtProc = spawn_link(ringo_external, fetch_external, [Path]),
+        ExtProc = spawn_link(ringo_external, fetch_external, [self(), Path]),
 
         ChunkLimit = ringo_util:get_iparam(
                 "DOMAIN_CHUNK_MAX", ?DOMAIN_CHUNK_MAX),
@@ -413,14 +392,14 @@ handle_cast({get, Key, From}, #domain{index = Index, info = Info} = D) ->
         {noreply, D};
 
 % Redirected get: Came back to the originator, or stuck in an infinite loop.
+% This is a normal outcome for the following unlikely scenario: Previous chunk
+% became full due to resyncing, which means that this chunk hasn't been created
+% yet. Since DB == none, we do redirected get and end up here. 
 handle_cast({get, _, From, _, Node, N}, D)
         when Node == node(); N > ?MAX_RING_SIZE ->
         %error_logger:info_report({"redir get inf"}),
-        Chunk = proplists:get_value(chunk, D#domain.info),
-        if Chunk == 0 ->
-                From ! {ringo_get, invalid_domain};
-        true -> ok
-        end,
+        From ! {ringo_get, invalid_domain},
+        
         % If we end up here, we couldn't find a replica that has more and
         % equal number of entries than specified by the owner's
         % max_repl_entries record. This happens if the replica that announced
@@ -595,19 +574,18 @@ handle_cast({find_owner, Node, N}, #domain{id = DomainID, owner = true} = D) ->
 
 % N < MAX_RING_SIZE prevents theoretical infinite loops
 handle_cast({find_owner, Node, N}, #domain{owner = false, id = DomainID,
-        db = DB, nextnode = Next} = D) when N < ?MAX_RING_SIZE ->
+        nextnode = Next} = D) when N < ?MAX_RING_SIZE ->
 
         gen_server:cast({ringo_node, Next},
                 {{domain, DomainID}, {find_owner, Node, N + 1}}),
-        
-        if DB == none ->
-                {stop, normal, D};
-        true ->
-                {noreply, D}
-        end;
+        {noreply, D};
 
 handle_cast({find_owner, _, _}, D) ->
         {noreply, D};
+
+%%%
+%%% Requests related to ringo_external
+%%%
 
 handle_cast({find_file, ExtFile, {Pid, Node} = From, N},
                 #domain{home = Home, prevnode = Prev, id = DomainID} = D) 
@@ -624,6 +602,19 @@ handle_cast({find_file, ExtFile, {Pid, Node} = From, N},
 handle_cast({find_file, _, {Pid, _}, _}, D) ->
         Pid ! file_not_found,
         {noreply, D};
+
+handle_cast(update_domain_size, #domain{home = Home} = D) ->
+        InfoFile = filename:join(Home, "info"),
+        D0 = case file:read_file_info(InfoFile) of
+                {ok, NfoStats} -> D#domain{size = 
+                        domain_size(Home) - NfoStats#file_info.size};
+                _ -> D
+        end,
+        {noreply, D0};
+
+%%%
+%%%
+%%%
 
 handle_cast({get_status, From}, D) ->
         From ! {status, node(), 
@@ -716,13 +707,19 @@ open_db(#domain{home = Home, dbname = DBName} = D) ->
                 _ -> false
         end,
         InfoFile = filename:join(Home, "info"),
+        {ok, NfoStats} = file:read_file_info(InfoFile),
         {ok, DB} = bfile:fopen(DBName, "a"),
         {ok, Nfo} = file:script(InfoFile),
-        D#domain{db = DB, size = domain_size(Home),
+        % Domain directory should not contain anything else besides the DB file,
+        % external values including iblocks, and the info file and possible an
+        % empty closed-file. Everything except the info files is counted to the
+        % domain size.
+        D#domain{db = DB, size = domain_size(Home) - NfoStats#file_info.size,
                  full = Full, info = Nfo}.
 
 domain_size(Home) ->
         [Size, _] = string:tokens(os:cmd(["du -b ", Home, " |tail -1"]), "\t"),
+        error_logger:info_report({"DomainSize", Size, "Home", Home}),
         list_to_integer(Size).
 
 
@@ -782,32 +779,26 @@ open_or_clone(Req, From, D) ->
                      handle_cast(Req, NewD)
         end.
 
-% should we prevent replica or sync entries to be added if the resulting
+% Should we prevent replica or sync entries to be added if the resulting
 % chunk would exceed the maximum size? If yes, spontaneously corrupted entries
 % can't be fixed. If no, a chunk may grow infinitely large. In this case, it is
 % possible that a nasty bug causes a large amounts of sync entries to be sent
 % which would eventually fill the disk.
-
-
+%
 % We trust that any function that calls do_write has checked fullness of the
 % domain already. If the domain is full and do_write() is called anyway, we 
 % believe that the caller has a good reason for that and perform write normally.
-do_write(Entry, #domain{home = Home, db = DB, full = true} = D) ->
-        ringo_writer:write_entry(Home, DB, Entry),
-        bfile:fflush(DB),
-        D#domain{num_entries = D#domain.num_entries + 1};
-
 do_write({E, Ext} = Entry, #domain{db = DB, home = Home} = D) ->
         ringo_writer:write_entry(Home, DB, Entry),
         bfile:fflush(DB),
-        if Ext == {} ->
-                S = iolist_size(E) + D#domain.size;
+        S = if Ext == {} ->
+                iolist_size(E);
         true ->
                 {_, V} = Ext,
-                S = iolist_size(E) + size(V) + D#domain.size
-        end,
+                iolist_size(E) + size(V)
+        end + D#domain.size,
         if S > D#domain.domain_chunk_max ->
-                close_domain(Home, DB),
+                close_domain(D#domain.full, Home),
                 D#domain{size = S, full = true,
                         num_entries = D#domain.num_entries + 1};
         true ->
@@ -815,8 +806,8 @@ do_write({E, Ext} = Entry, #domain{db = DB, home = Home} = D) ->
                         num_entries = D#domain.num_entries + 1}
         end.   
 
-close_domain(Home, DB) ->
-        bfile:fclose(DB),
+close_domain(true, _) -> ok;
+close_domain(_, Home) ->
         CFile = filename:join(Home, "closed"),
         ok = file:write_file(CFile, <<>>), 
         ok = file:write_file_info(CFile, #file_info{mode = ?RDONLY}).
@@ -832,12 +823,11 @@ stats_buffer_add(Stats, Key, Value) ->
 
 %%% callback stubs
 
-
-terminate(Reason, #domain{db = none}) -> 
+terminate(Reason, #domain{db = none}) ->
         error_logger:info_report({"Terminate", Reason});
-terminate(Reason, #domain{db = DB}) ->
+terminate(Reason, D) ->
         error_logger:info_report({"Terminate (close DB)", Reason}),
-        bfile:fclose(DB).
+        bfile:fclose(D#domain.db).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 

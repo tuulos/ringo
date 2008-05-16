@@ -31,15 +31,17 @@ def domain_id(name, chunk):
 def make_domain_id(did):
         return hex(did)[2:-1]
 
-def check_entries(r, nrepl, nentries):
+def check_entries(r, nrepl, nentries, check_size = True):
         if r[0] != 200:
                 return False
         if len(r[1][3]) != nrepl:
                 return False
 
-        owner_root = -2
+        owner_root = owner_size = -2
         roots = []
         for node in r[1][3]:
+                if 'error' in node:
+                        continue
                 num = node["num_entries"]
                 if nentries != None and\
                         (num == "undefined" or int(num) != nentries):
@@ -57,7 +59,7 @@ def check_entries(r, nrepl, nentries):
 
         # check that root hashes match
         return [(r, s) for r, s in roots if r != owner_root\
-                or s != owner_size] == []
+                or (check_size and s != owner_size)] == []
                
 
 def _check_results(reply, num):
@@ -460,6 +462,10 @@ def test12_extsync():
         
         newid, p = new_node()
         print "Creating a new node", newid
+        if not _wait_until("/mon/ring/nodes",
+                lambda x: _check_results(x, 6), 60):
+                return False
+        
         print "Putting an extra item (should go to the new node as well)"
         ringo.put("extsync", "extra", v, verbose = True)
 
@@ -641,15 +647,16 @@ def test19_redirget():
                 print "Ring didn't converge"
                 return False
         
-        try:
-                single_get_check("redirget", N)
-        except:
-                print "Exception"
-                while 1: pass
+        single_get_check("redirget", N)
         
+        # Owner and replicas will have different sizes here, thus check_size =
+        # False. Iblocks are included in the chunk size, but owner doesn't have
+        # them. Check_external() ignores iblocks, so they won't get to the owner
+        # automatically so the owner size differs from the replica size.
         print "Waiting for resync.."
         if not _wait_until("/mon/domains/domain?id=0x" + domainid,
-                        lambda x: check_entries(x, 7, N), 300):
+                        lambda x: check_entries(x, 7, N, check_size = False),\
+                                300):
                 print "Resync failed"
                 return False
 
@@ -801,16 +808,68 @@ def test22_chunksizes():
         os.environ['DOMAIN_CHUNK_MAX'] = orig_max
         return True
 
+# Make node A, put 90% entries, kill A. make node B put 90%, restart A.
+# After resyncing owner should be 180% full and only one chunk should 
+# exist (note that percentages are totally approximate). The idea is 
+# anyway that resyncing should work with closed domains.
+def test23_resyncfull():
+        def make_and_put(node_id, start):
+                ringo.request("/mon/ring/reset")
+                ringo.request("/mon/domains/reset")
+                new_node(node_id)
+                if not _wait_until("/mon/ring/nodes",
+                        lambda x: _check_results(x, 1), 60):
+                        return False
+                print "Create domain"
+                node, domainid = ringo.create("resyncfull", 2)
+                print "Filling about 70% of the chunk.."
+                for i in range(start, start + 8000):
+                        ringo.put("resyncfull", "abc-%d" % i, "def-%d" % i)
+                if not _wait_until("/mon/domains/domain?id=0x" + domainid,
+                                lambda x: check_entries(x, 1, 8000), 300):
+                        print "Put failed"
+                        return False
+                return True
+
+        chunk_size = 500 * 1024
+        orig_max = os.environ['DOMAIN_CHUNK_MAX']
+        os.environ['DOMAIN_CHUNK_MAX'] = str(chunk_size)
+
+        did = domain_id("resyncfull", 0)
+        owner_id = make_domain_id(int(did, 16) - 1)
+        another_id = make_domain_id(int(did, 16) + 1)
+        print "Instantiating node A:", owner_id
+        if not make_and_put(owner_id, 0):
+                return False
+        print "Kill node A"
+        kill_node(owner_id)
+        print "Instantiating node B:", another_id
+        if not make_and_put(another_id, 8000):
+                return False
+        print "Reinstantiating node A"
+        new_node(owner_id)
+        # This just wakes up the domain
+        code, reply = ringo.request("/mon/domains/domain?id=0x" + did)
+        print "Waiting for resync.."
+        if not _wait_until("/mon/domains/domain?id=0x" + did,
+                        lambda x: check_entries(x, 2, 16000), 300):
+                print "Resync failed"
+                return False
         
+        code, reply = ringo.request("/mon/domains/domain?id=0x" + did)
+        if reply[3][0]['full'] == False:
+                print "Chunk should be closed"
+                return False
+        
+        single_get_check("resyncfull", 16000)
+        os.environ['DOMAIN_CHUNK_MAX'] = orig_max
+        return True
 
 # X put, exceed chunk limit, check that new chunk is created. Check get.
 # X put with replicas, exceed chunk limit, wait to converge, check that sizes
 #   match
 # X put to 50% chunk limit, kill node, put 50%, check that new chunk is 
 #   created, kill node, put 50%, check that two chunks exist (big values too)
-# - make node A, put 90% entries, kill A. make node B put 90%, restart A.
-#   After resyncing owner should be 180% full (only one chunk). Put should
-#   create a new chunk.
         
         
 tests = sorted([f for f in globals().keys() if f.startswith("test")])

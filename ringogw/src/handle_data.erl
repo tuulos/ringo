@@ -30,7 +30,7 @@
 op([C|_] = Domain, Params, _Data) when is_integer(C) ->
         PParams = parse_params(Params, ?CREATE_DEFAULTS),
         Flags = parse_flags(PParams, ?CREATE_FLAGS),
-        error_logger:info_report({"CREATE", Domain, "WITH", PParams}),
+        %error_logger:info_report({"CREATE", Domain, "WITH", PParams}),
         V = proplists:is_defined(create, PParams),
         if V ->
                 DomainID = ringo_util:domain_id(Domain, 0),
@@ -168,8 +168,12 @@ ringo_receive_chunked(single, Req, N, Timeout) ->
                 {ringo_get, full, Chunk} ->
                         Req(Chunk + 1),
                         ringo_receive_chunked(single, Req, N + 1, Timeout);
+                {ringo_get, invalid_domain} when N == 0 ->
+                        throw({http_error, 404, <<"Key not found">>});
                 {ringo_get, invalid_domain} ->
-                        throw({http_error, 404, <<"Invalid domain">>})
+                        % This happens if the previous chunk is 
+                        % full and the next one hasn't been created yet.
+                        ringo_receive_chunked(single, Req, N - 1, Timeout)
         after Timeout ->
                 throw({http_error, 408, <<"Request timeout">>})
         end;
@@ -183,7 +187,8 @@ ringo_receive_chunked(many, Req, _, Timeout) ->
                         {ringo_get, full, Chunk} ->
                                 Req(Chunk + 1),
                                 {next, N + 1};
-                        {ringo_get, invalid_doamin} -> invalid_domain
+                        {ringo_get, invalid_domain} when N == 0 -> done;
+                        {ringo_get, invalid_domain} -> {next, N - 1}
                 after Timeout -> timeout
                 end
         end}.
