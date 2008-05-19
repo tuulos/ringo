@@ -1,0 +1,610 @@
+
+.. |date| date::
+
+Ringo
+'''''
+
+.. contents::
+
+Introduction
+============
+
+Ringo is a distributed, replicating key-value store based on consistent
+hashing and immutable data. Unlike many general-purpose databases,
+Ringo is designed for a very specific use case: For archiving small
+(less than 4KB) or medium-size data items (<100MB) in real-time so
+that the data can survive N - 1 disk breaks in a manner that scales
+to terabytes of data. In addition to storing, Ringo should be able
+to retrieve individual or small sets of data items with low latencies
+(<10ms) and provide a convenient on-disk format for bulk data access.
+
+Ringo supports the following operations on data: 
+
+- **Create** a domain, which initializes a new set of items.
+- **Put** item to a domain, which appends a new key-value pair to an 
+  existing domain.
+- **Get** items from a domain, which returns all values for the given key 
+  from the given domain.
+
+Note that the above operations can only add new items, or access existing
+items in the system but never modify them. Furthermore, Ringo doesn't
+change or move data internally in any way, once it has been written
+to disk. This should guarantee that Ringo doesn't corrupt data in any
+situation. Even if the local filesystem corrupts, which Ringo uses
+to store its data, the data can be recovered from redundant copies on
+replica nodes.
+
+Ringo is designed to work in a cluster of servers. It is based
+on consistent hashing, which connects many independent processes
+on many independent servers to a single consistent system. It is
+possible to add and remove servers from the system on the fly without
+any interruptions. This eases maintenance of the system and makes it
+fault-tolerant. As there is no central bookkeeping mechanism, nor any
+global data structures in the system, Ringo is inherently scalable. Simple
+chunking mechanism takes care of load sharing and balancing in the cluster.
+
+This document describes the internals of Ringo. The main purpose is to
+describe the central concepts of the system so that it is easier to
+see how individual modules in the source code fit together.
+
+Sections below contain references to corresponding modules and functions
+in the source code in parentheses. For brevity, request handling
+functions of form (``ringo_node:handle_cast(match..``) are written as
+(``ringo_node:<match>``).
+
+Ring
+====
+
+This section explains Ringo's ring-shaped overlay network which is based
+on consistent hashing. In the following, this overlay network is simply
+referred as "the ring". The related code can be found in the module
+``ringo_node``.
+
+The ring serves a single purpose: To provide a consistent addressing
+scheme for data replication. Consider the following situation: You want
+to make K redundant copies of a data item to N separate servers. If K =
+N, you could easily broadcast data to all active servers. However, this
+makes scaling up the storage space almost impossible, as K increases
+linearly with the number of servers and redundant copies of old data
+fill up new servers.
+
+In a more realistic case, K is a constant and K < N. How to choose
+which K servers, or nodes, should receive a copy of the data item? You
+could pre-allocate the key-space amongst the known nodes, but making
+the allocation beforehand is difficult without knowing if the keys are
+distributed uniformly, which keys will be used, and which nodes are
+going to crash, when, and how many nodes will be added. Instead of a
+static allocation, we would like to choose the K servers on the fly,
+based on the current status of the system.
+
+Consistent hashing provides a conceptually simple solution to the problem:
+
+- Each node is given a random ID, in Ringo, a 128-bit integer,
+  (``#rnode.myid``).
+- Nodes are sorted according to ascending ID.
+- Each node connects only to two other nodes: Its successor and predecessor
+  in the list of active IDs. (``ringo_node:assign_node()``).
+- The node with the largest ID connects back to the node with the smallest
+  ID, closing the ring.
+- If a node X dies, the ring is fixed by making X's predecessor its
+  successor's predecessor, like in a linked list. A new node can be added to
+  the ring in a similar manner.
+- Due to the ordering, each node has an unambiguous position amongst its
+  peers, which makes the system consistent.
+
+This schema is illustrated below:
+
+::
+   
+              +-----+
+        +---->|  9  |-----+
+        |     +-----+     V
+     +-----+           +-----+ 
+     |  6  |           |  2  |
+     +-----+           +-----+
+        ^     +-----+     |
+        +-----|  3  |<----+
+              +-----+
+
+Each box is a node and the numbers inside the boxes are the node IDs. The
+ring is used as follows:
+
+- Each request is given a random ID ((``ringo_util:domain_id()``).
+- The request is sent to *any* node in the ring.
+- A match function (``ringo_util:match()``) compares the request id Q and the
+  node id P. A node handles requests where P < Q < P + 1 where P + 1 is the
+  node's successor's ID (``ringo_node:<match>``).
+
+For instance in the diagram above, a request with Q=5 would be handled
+by the node 3 and a request Q=12 would be handled by the node 9, and
+Q=1 by the node 2. We call a node P that matches a request ID Q **owner** for
+the request ID. In Ringo, each domain is owned by a node. Note, however, that
+the owner may change whenever a new node is added, or an existing node is removed
+from the ring.
+
+Building and maintaining the ring in practice is not quite as
+straightforward. There are two main problems:
+
+1. How to find the correct place in the ring for a new node that
+doesn't know its neighbors?
+
+2. How to ensure that only a single ring exists globally? For instance, in
+the diagram above we could easily form two independent and internally
+consistent rings (e.g. 9-2 and 3-6).
+
+The first issue is solved by ``ringo_node:join_existing_ring()`` which is
+called when the node starts up. This function obtains a list of available
+nodes from the Erlang name server with ``ringo_util:ringo_nodes()``,
+chooses the best matching neighbor candidates from the list, and
+opportunistically tries to connect to them. If the neighbors accept the
+new node, the node becomes a part of the ring. If not, the process is
+repeated with new neighbor candidates. If this doesn't succeed, the
+node dies.
+
+The second issue is handled by a separate process running under
+``ringo_node``, called ``check_parallel_rings()``. Detecting parallel nodes
+is rather straightforward, but once a parallel ring has been detected, which
+of the rings should be killed and which one should stay alive? As each
+existing ring is running a ``check_parallel_rings()`` process of its own,
+they are effectively racing to kill each other.
+
+To prevent mutually assured destruction from happening, we need a globally
+unique measure that unambiguously determines which ring is the only
+correct one: We define that it is the ring that contains a node that has
+the globally smallest ID. Since the node ID space contains only positive
+integers, we know that a smallest ID always exists. Given this definition,
+the job of ``check_parallel_ring()`` boils down to finding all parallel
+rings, and killing all the rings that it finds, possibly also itself,
+except the one that includes a node with the smallest ID.
+
+Together, ``ringo_node():join_existing_ring()`` and
+``ringo_node:check_parallel_rings()`` guarantee that an arbitrary number
+of independent node processes, running on a number of separate servers,
+eventually converge and form a single ring. For further details about
+the ring formation, and healing during changes, see comments in the
+``ringo_node`` module.
+
+
+Node Structure
+--------------
+
+This section gives an overview of the modules in a ringo node. A ringo
+node is a normal Linux process. A server may have several ringo nodes
+running in parallel -- this is often beneficial from load balancing and
+resource utilization as described in the Amazon's Dynamo paper [Dynamo]_
+which calls node processes *virtual nodes*. However, data is guaranteed
+to be replicated on physically separate servers regardless of the ring
+topology.
+
+The diagram below depicts the main modules that make a ringo node. The
+hierarchy represents the supervision tree; each box corresponds to an
+independent process or in some cases a few logically related utility
+processes, all of which run in parallel.
+
+::
+
+                             +------------+
+                             | ringo_main |
+                             +------------+
+                                    |
+                             +------------+
+                             | ringo_node |
+                             +------------+
+                                   ||| (many)
+                            +--------------+
+                            | ringo_domain |
+                            +--------------+
+             +----------------------+------------------+
+             |                      |                  |
+    +------------------+ +-------------------+ +----------------+
+    | ringo_syncdomain | | ringo_indexdomain | | ringo_external |
+    +------------------+ +-------------------+ +----------------+
+
+
+When the Erlang virtual machines starts, it loads the ``ringo_main``
+module which initializes the supervision tree. The main module starts a
+single ``ringo_node`` process that represents the node in the ring. Each
+node hosts multiple domains, namely the domains that match to the node's
+ID range, and replicas for domains belonging to the node's successors.
+
+Each domain is handled by a ``ringo_domain`` process. Domain
+synchronization is handled by the ``ringo_syncdomain`` module, which
+contains functions that are periodically executed in separate processes.
+Detecting and copying of missing large, externally stored values is
+handled by the ``ringo_external`` module. Get-requests are handled by
+the indexing process in ``ringo_indexdomain``.
+
+
+Creating a Domain
+=================
+
+A new domain is created with a POST-request:
+
+``http://ringo/mon/data/domain_name?create``
+
+POST-data is ignored and it may be empty,
+
+After receiving the request, Ringo Gateway (``ringogw``) proceeds
+as follows:
+
+1. Domain ID is computed for the given ``domain_name``:
+
+   ``domainid = md5("0 " + domain_name)``
+
+   where 0 denotes the first chunk.
+
+2. A ``new_domain`` request is sent to the ring for ``domainid``.
+
+3. When a matching node is found, ``ringo_node`` spawns a new domain for this
+   ``domainid``, unless it exists already, and calls
+   ``ringo_domain:<new_domain>``. This function creates a new directory for
+   the domain and initializes an empty DB file.
+
+If the ``domainid`` exists already, the request fails.
+
+
+Putting entries to a domain
+===========================
+
+A key-value pair is put to existing domain with a POST-request:
+
+``http://ringo/mon/data/domain_name/key``
+
+where POST-data contains the value. POST-data is taken as value as is, so
+application is free to choose any encoding for the data.
+
+In the simplest case, putting a key-value pair to an existing domain is
+a straightforward operation: Domain ID is computed as above, a request
+is sent to the domain owner, ``ringo_domain:<put>``, which appends the
+entry to the DB file. In addition, the key and the entry's position in
+the DB file is sent to ``ringo_indexdomain`` for indexing. If the domain
+doesn't exists, the request fails.
+
+Actual encoding of data is handled by ``ringo_writer``. Encoding adds
+headers and checksums to the entry, but does not touch its contents. If
+size of the value exceeds the limit for an *internal* entry, it is
+written to an *external* file to the domain directory and a pointer to
+it is saved to the DB.
+
+In practice, the normal course of operation is complicated by replication,
+chunking and abrupt changes in the ring. These issues are treated one
+by one below.
+
+Replication
+-----------
+
+Each domain has an owner and K identical replicas, where K is defined
+when the domain is created. Replicas are handled by a ``ringo_domain``
+server on the K nodes that precede the owner in the ring. As each replica
+maintains an identical copy of the owner's data, any of them may take
+over the owner in case that it fails. The resyncing process makes sure that
+the owner and the replicas keep in synch, even if the owner of any of the
+replicas temporarily fail and miss some entries.
+
+Ringo relies on opportunistic replication. The domain owner
+initiates replication in ``ringo_domain:<put>`` by calling
+``ringo_domain:replicate()``. This functions forwards the request to the
+owner's predecessor in the ring using ``ringo_domain:<repl_put>``, which
+in turn forwards the request to its predecessor etc. until K replicas
+have been reached. The owner doesn't wait for acknowledgements from the
+replicas, so there is no guarantee that any replicas have received or
+written the entry successfully.
+
+The rationale is the following: If none of the replicas, nor the owner,
+can be found, the put request fails which gives the sender an opportunity
+to retry the request later. If the owner is found, the request succeeds,
+and it is likely that at least one copy of the entry has been stored
+successfully. In this case, even if all the replicas would fail, resyncing
+makes sure that additional copies will be created eventually. As long as
+there are any nodes available in the ring besides the owner, replicas will be
+created. Since Ringo is so greedy in making replicas anyway, notifying the
+sender about a replica failure would provide only little additional benefit.
+
+Redirected put
+--------------
+
+Consider the following scenario: In a ring of three nodes, the node
+B is the owner for the domain Q. Many entries have been put to Q and
+its replicas. After some time, a new node C is added to the ring which
+becomes the new owner for the domain Q.
+
+The next put request to the domain Q arrives to the node C. However, since
+the node has just started, the domain Q doesn't exists there yet. To the
+owner this looks like a put request to a non-existing domain, which should
+fail. However, the request is totally valid although the domain owner is
+out-of-synch.
+
+To handle cases like this, the owner *redirects* the get request to
+its predecessor, in hope that it was the previous owner, if the domain
+hasn't been created yet on the owner's node. When a predecessor receives
+a ``ringo_domain:<redir_put>`` request, it checks whether domain files
+actually exists on this node. If they do, it handles the put request
+similarly to the owner, except without replication. Otherwise it redirects
+the request again to its predecessor. If the redirected put request
+circulates through the whole ring, and the owner gets back its own request,
+the domain is likely to be non-existent and the request fails.
+
+Eventually the resyncing process will create the domain to the owner, and
+copy the previously written entries to it. After this, the put requests are
+handled as usual.
+
+Chunking
+--------
+
+Ringo doesn't set any limits on the domain size. However, handling an
+arbitrarily large domain on a single node is impractical for a number of
+reasons:
+
+- Load is distributed unevenly in the ring: If some node happens to contain a
+  gigabyte-scale domain whereas others are measured in megabytes, the heavily
+  loaded node can easily become a bottleneck for the whole system.
+
+- Likelihood of a catastrophical loss is increased if all data in a domain is
+  stored on one disk, also with replicas.
+
+- Domain size is limited by size of the largest disk.
+
+- Indexing and accessing the entries becomes impractical with huge domains.
+
+To alleviate all these issues, domains are split into constant-sized
+*chunks*. Currently, the default chunk size is 100MB. When the domain
+size exceeds this limit, a new chunk is created, which will handle
+subsequent put-requests.
+
+The core Ringo, ``ringo_domain``, doesn't know chunks. It only cares about
+the size of the domain and if the size exceeds the limit, it reports
+this to the Ringo Gateway. After receiving this reply, ``ringogw``
+automatically creates a new domain, after increasing the chunk number
+by one. Thus, the ``i`` th chunk for the domain ``domain_name`` is an
+ordinary domain with the following ``domainid``:
+
+``domainid = md5(i + " " + domain_name)``
+
+As a result, all the data is distributed in 100MB chunks across the
+cluster.
+
+Due to chunking, computing the ``domainid`` in the first place for a
+put-request becomes more complicated. Since the Ringo Gateway doesn't
+know the current chunk number, ``i``, in the first place, it can't
+compute the correct ``domainid`` for the current chunk. In this case,
+``ringogw`` starts trying the request from ``i = 0`` until it succeeds. The
+successful chunk ID is stored to an ID cache, so that the next request
+doesn't have to repeat the trial.
+
+Getting entries from a domain
+=============================
+
+Ringo supports retrieval of stored values based on keys. However, the
+key-based retrieval is not well suited for bulk data access, due to
+millisecond-scale latencies for accessing an individual item. If efficient
+access is needed for large amounts of data, the application can directly
+access the domain's DB file on disk. Ringo is designed so that reading the
+DB file is always safe and as long as the reader omits entries that don't
+match their checksum, no partial or corrupted entries are returned.
+
+Values for the given key are fetched to existing domain with a GET-request:
+
+``http://ringo/mon/data/domain_name/key``
+
+This call returns a stream of data, that contains a list of length-prefixed
+values that were stored with the given key. See ``ringogw/py/ringo.py`` for
+an easy-to-use Python interface for the stream.
+
+Sometimes it is useful to retrieve only one value for the given key, without
+any special encoding. This is possible with the ``?single`` parameter. For
+instance, this request
+
+``http://ringo/mon/data/domain_name/key?single``
+
+returns an arbitrary value for the given key without any special encoding, so
+you can see the results e.g. in a Web browser.
+
+Index
+-----
+
+Ringo maintains an optional per-domain inverted index in real-time for all
+the data stored in the system in ``ringo_indexdomain``. Extra attention
+has been paid to make the indices to consume only a minimal amount of
+memory, so that the application could freely store entries as it likes,
+without having to worry about limited resources. For details about the
+index structure, see ``ringo_index`` and ``bin_utils`` that contains
+some related utility functions.
+
+Since Ringo's indices are based on keys, the number of keys in a domain makes
+a big difference in memory consumption and retrieval performance. Since
+applications can often roughly estimate the number of keys they will need,
+Ringo provides a few different indexing approaches depending on the size of
+the key-space. Application can choose the desired approach when creating the
+domain.
+
+- If the number of keys is small, say, less than 20, a good approach might be
+  to make separate domain for each key. For instance, values for the key A
+  could go to domain named ``domain_name/A``. This way you can disable
+  indexing for this domain. When the values are needed for A, the application
+  can get all values for the domain ``domain_name/A``.
+
+- If the number of keys is large, especially in the cases where each key is
+  unique, it makes sense to keep all inverted indices in memory. This mode is
+  called ``iblock_cache`` and it is enabled by default.
+
+- If the number of keys is large, but the keys are not accessed uniformly,
+  Ringo provides a mode called ``keycache``. In this mode, only inverted
+  lists for the most recently used keys are kept in memory. This mode allows
+  you to gap the memory consumption for indices.
+
+Ringo doesn't cache data. In all the cases, key-value pairs are retrieved
+from disk, which may cause many expensive random seeks if the operating
+system hasn't cached the DB file in full. Applications are encouraged to use
+internal caches that are aware of application-specific usage patterns.
+
+Index blocks
+------------
+
+For efficiency, not all the domain's data is stored in one index, which size
+might vary greatly depending on the number of keys and values and their
+sizes. Instead, the index is split into *index blocks* or *iblocks*, each of
+which contains an inverted index for 10000 key-value pairs.
+
+Index blocks are saved to the domain as any other values, except that a
+special flag denotes their difference from the user-put values. However,
+iblocks are copied to replicas as normal values, which makes it faster for a
+replica to take over the owner if it fails.
+
+Note that indices are built lazily. Only when the first get or put-request
+is made, the index is opened. This ensures that in the normal case only
+the owner contains the index for the domain. However, a replica will build
+the index automatically, based on the previously saved iblocks, if requests
+are forwarded to it.
+
+Redirected get
+--------------
+
+Get-requests are redirected to a previous owner similarly to put requests,
+if the owner doesn't have data for the domain it owns. Redirection is handled
+by ``ringo_domain:<get>``.
+
+Chunks
+------
+
+Since any domain chunk may contain the requested key, the get-request
+is distributed to all the domain's chunks in parallel. Distribution is
+handled by the Ringo Gateway. Each chunk that is full, that is, exceeds
+the chunk size limit, replies this fact to ``ringogw`` before it forwards
+the get request to its ``ringo_indexdomain`` instance. When ``ringogw``
+gets this reply, it forwards the request also to the next chunk.
+
+This way the request quickly propagates to all available chunks for the
+domain, which will process the request in parallel. Note that due to
+this parallelism, there is absolutely no guarantee on the order of the
+returned values.
+
+Resyncing
+=========
+
+Resyncing ensures that replicas and the owner of a domain contain the
+same entries. The ring, which Ringo relies on, may change easily due to
+expected and unexpected reasons. In order to be able to address requests to
+the nodes that are most likely to respond them, data must follow changes in
+the ring, yet while using only a minimal amount of precious bandwidth.
+
+In Ringo, the following operations are directly based on resyncing:
+
+- Opportunistic replication: Owner needs no acknowledgements for successful
+  replication, as it trusts resyncing to fix any possible problems.
+- Node removal / addition in the ring: Nodes may be added and removed to /
+  from the ring freely, as resyncing will automatically copy data to
+  appropriate nodes.
+- Data validity: If an entry in the DB file spontaneously corrupts, resyncing
+  will add a valid copy to the file from a replica.
+
+The resyncing algorithm is based on a Merkle- or hash-tree. The tree is built
+as follows:
+
+1. A periodical process goes through the DB file
+   (``ringo_sync:make_leaf_hashes_and_ids()``).
+2. For each entry a leaf L is chosen between 0 and 8191, based on the entry's
+   EntryID.
+3. A hash value H(L) on the leaf L is updated based on the EntryID.
+4. Once all the entries have been processes and leaf hashes computed, a tree
+   is built on top of the leaves.
+5. For each pair of consequent leaf hashes, a combined hash value is computed
+   (``ringo_sync:build_merkle_tree()``).
+6. The previous step is repeated for each level of the binary tree, until the
+   root is reached. The result is the current Merkle tree for the DB file.
+
+The tree looks somewhat like this:
+
+::
+
+                 Root Hash
+                    |
+        +-----------+---------+
+       ...                   ...         
+        |                     |
+    H(H0, H1)          H(H8190, H8191)  
+        |                     |
+     +------+            +--------+
+     |      |            |        |
+     H0     H1   ....  H8190    H8191
+
+
+Merkle-tree provides an efficient way to check that two ordered sets
+of items are equal, and if they aren't, which of the items differ. If
+two DB files contain exactly the same set of entries, the roots of the
+corresponding Merkle trees are necessarily equal. If some of the entries
+are missing from either tree, we can traverse the tree downwards to find
+the leaves that differ. 
+
+In Ringo, this method is used to resync replicas with the owner. To avoid
+K^2 negotiations between K replicas, each replica resyncs its contents
+only with the owner. Eventually, all missing entries will flow through
+the owner to all needing replicas.
+
+Missing entries are exchanged through the domain's *inbox* and *outbox*.
+Inbox contains items that are missing from this node, and wait to be written
+to the DB file. Outbox contains entry IDs that are requested from this node,
+and wait to be fetched from the DB file. The boxes serve as buffers to avoid
+lots of individual, expensive, random accesses to the DB file.
+
+On the replica-end the synchronization process, started periodically by
+``ringo_syncdomain:resync()``, proceeds as follows:
+
+1. Current inbox is retrieved with a ``ringo_domain:<flush_syncbox>>``
+   request.
+2. Leaf hashes are re-computer by ``ringo_sync:make_leaf_hashes_and_ids()``.
+3. Inbox is compared against the current entry IDs. Only those entries which
+   don't already exists in the DB are appended to it in
+   ``ringo_sync:flush_sync_inbox()``.
+4. A Merkle-tree is built for the new DB, including the just added entries,
+   by ``ringo_sync:build_merkle_tree()``.
+5. Current owner for this domain is queried in
+   ``ringo_syncdomain:find_owner()`` using the ``ringo_domain:<find_owner>``
+   request.
+6. Replica's Merkle-tree is compared with that of the owner's, using
+   the ``ringo_domain:<sync_tree>`` request. The result is a list of
+   entry IDs that are missing either from the owner or the replica.
+7. Replica sends a ``ringo_domain:<sync_pack>`` request to the owner that
+   contains the list of missing entry IDs. The owner inserts entryIDs that
+   are missing from the replica to its outbox and request entries that are
+   missing from it from the replica with a ``ringo_domain:<sync_get>``
+   request. This request adds the entryIDs to the replica's outbox.
+8. Outbox is processed by ``ringo_syncdomain:flush_sync_outbox()``. It takes
+   the current outbox, goes through the DB file, and sends the requested entries
+   to the requester when a matching entry is found with a 
+   ``ringo_domain:<sync_put>`` call.
+
+The owner performs only steps 1-4 and 8.
+
+If the resyncing process fails at any point, some entries may fail to
+get resynced correctly. However, once the resyncing process starts again
+after a predefined interval, the difference is detected again and the
+same process repeats. The remarkable fact is that there aren't any hot spots
+in the resyncing process, whose failure might compromise the DB.
+
+Large entries
+-------------
+
+The above resyncing process guarantees that all the domain's DB files contain
+eventually the same set of entries. However, large, external values which are
+stored in separate files are copied separately.
+
+If ``ringo_syncdomain:flush_sync_inbox()`` notices that an entry contains an
+external value, it sends a message to ``ringo_external:fetch_external()`` that
+contains a queue of external files that are waiting to be copied. This
+process makes sure that the external file will be eventually copied to the
+node.
+
+A separate, periodically running process in
+``ringo_external:check_external()`` goes through the DB file and
+for each external entry checks that the corresponding external file
+actually exists.  If it doesn't it is requested to be copied by
+``ringo_external:fetch_external()``.
+
+
+References
+==========
+
+.. [Dynamo] *Dynamo: Amazon's Highly Available Key-value Store*, http://s3.amazonaws.com/AllThingsDistributed/sosp/amazon-dynamo-sosp2007.pdf 
+
+
+Generated from ``doc/ringodoc.txt`` on |date|.
