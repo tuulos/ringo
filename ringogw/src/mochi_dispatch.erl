@@ -46,8 +46,9 @@ catch_op(Req, Mod, Args) ->
                         Req:ok({"text/plain", json:encode(Res)});
                 
                 {data, Res} ->
-                        error_logger:info_report({"KEP", Res}),
-                        Req:ok({"application/octet-stream", Res});
+			[_, Params] = Args,
+			Req:ok({proplists:get_value("mime", 
+				Params, "application/octet-stream"), Res});
 
                 {chunked, ReplyGen} ->
                         Req:respond({200, [{"Content-type",
