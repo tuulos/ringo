@@ -9,5 +9,6 @@ for id in `ssh $1 "ls -1 $2"`
 do
 	echo "Starting ringo-$id"
 	ssh $1 "ringo/ring/start_ringo.sh $2/$id"
+	sleep 1
 done
 
