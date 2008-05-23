@@ -87,10 +87,15 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         process_flag(trap_exit, true),
         ExtProc = spawn_link(ringo_external, fetch_external, [self(), Path]),
 
-        ChunkLimit = ringo_util:get_iparam(
+        ChunkLimit = ringo_util:get_param(
                 "DOMAIN_CHUNK_MAX", ?DOMAIN_CHUNK_MAX),
 
-        D0 = #domain{this = self(),
+        ReplHost = {ringo_util:get_param("RINGOHOST", net_adm:localhost()),
+                        node(), self()},
+        
+        error_logger:info_report({"REPLHOST", ReplHost}),
+
+        D0 = #domain{this = ReplHost,
                      owner = IsOwner,
                      home = Path, 
                      dbname = filename:join(Path, "data"),
@@ -123,11 +128,11 @@ init([Home, DomainID, IsOwner, Prev, Next]) ->
         
         ets:insert(Stats, {started, ringo_util:format_timestamp(now())}),
 
-        ResyncInt = ringo_util:get_iparam(
+        ResyncInt = ringo_util:get_param(
                 "RESYNC_INTERVAL", ?RESYNC_INTERVAL),
-        GlobalInt = ringo_util:get_iparam(
+        GlobalInt = ringo_util:get_param(
                 "GLOBAL_INTERVAL", ?GLOBAL_RESYNC_INTERVAL),
-        ExtInt = ringo_util:get_iparam(
+        ExtInt = ringo_util:get_param(
                 "CHECK_EXT_INTERVAL", ?CHECK_EXTERNAL_INTERVAL),
         
         RTime = round(ResyncInt + random:uniform(ResyncInt * 0.5)),
@@ -291,7 +296,8 @@ handle_cast({put, Key, Value, Flags, From}, #domain{owner = true,
         % re-sends) in a serialized manner (i.e. no spawning).
         Nrepl = proplists:get_value(nrepl, InfoPack),
         DServer = self(),
-        replicate({DServer, DomainID, EntryID, Entry, Nrepl}, Prev, 0),
+        replicate({DServer, DomainID, EntryID, Entry, Nrepl},
+                D#domain.this, Prev, 0),
 
         %spawn(fun() -> replicate_proc(
         %        {DServer, DomainID, EntryID, Entry, Nrepl}, 0)
@@ -437,6 +443,7 @@ handle_cast({repl_put, _EntryID, _, {_, ONode, _OPid}, _, _}, D)
 % replica on the same physical node as the owner, skip over this node
 handle_cast({repl_put, _, _, {OHost, _, _}, _, _} = R, #domain{host = Host,
         id = DomainID, prevnode = Prev} = D) when OHost == Host ->
+        error_logger:info_report({"SKIPHOST", OHost, Host}),
         
         gen_server:cast({ringo_node, Prev}, {{domain, DomainID}, R}),
         {noreply, D};
@@ -728,16 +735,11 @@ domain_size(Home) ->
 %%% Put with replication
 %%%
 
-replicate(_, _, ?MAX_TRIES) ->
+replicate(_, _, _, ?MAX_TRIES) ->
         error_logger:warning_report({"Replication failed!"}),
         failed;
 
-replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Prev, _Tries) ->
-        % XXX: This is the correct line:
-        %Me = {net_adm:localhost(), node(), self()},
-        % XXX: This is for debugging:
-        %error_logger:info_report({"replicate", EntryID, size(Entry)}),
-        Me = {os:getenv("DBGHOST"), node(), self()},
+replicate({DServer, DomainID, EntryID, Entry, Nrepl} = _R, Me, Prev, _Tries) ->
         if Prev == node() -> ok;
         true ->
                 gen_server:cast({ringo_node, Prev}, {{domain, DomainID},

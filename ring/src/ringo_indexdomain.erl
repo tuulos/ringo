@@ -52,7 +52,7 @@ init([Domain, Home, DBName, Options]) ->
                         {true, false} -> {key, {gb_trees:empty(), lrucache:new()}};
                         {false, false} -> {iblock, []}
                 end,
-        CacheLimit = ringo_util:get_iparam("KEYCACHE_LIMIT", ?KEYCACHE_LIMIT),
+        CacheLimit = ringo_util:get_param("KEYCACHE_LIMIT", ?KEYCACHE_LIMIT),
         
         {ok, DB} = bfile:fopen(DBName, "r"),
         {ok, #index{cur_iblock = ringo_index:new_dex(),

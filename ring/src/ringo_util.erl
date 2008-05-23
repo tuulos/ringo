@@ -1,7 +1,7 @@
 -module(ringo_util).
 
 -export([match/2, match/4, ringo_nodes/0, validate_ring/1, domain_id/1,
-         domain_id/2, group_pairs/1, send_system_status/1, get_iparam/2,
+         domain_id/2, group_pairs/1, send_system_status/1, get_param/2,
          format_timestamp/1, sort_nodes/1, best_matching_node/2]).
 
 -include("ringo_node.hrl").
@@ -97,10 +97,11 @@ format_timestamp(Tstamp) ->
         TimeStr = io_lib:fwrite("~.2.0w:~.2.0w:~.2.0w", tuple_to_list(Time)),
         list_to_binary(DateStr ++ TimeStr).
 
-get_iparam(Name, Default) ->
+get_param(Name, Default) ->
         case os:getenv(Name) of
                 false -> Default;
-                Value -> list_to_integer(Value)
+                Value when is_integer(Default) -> list_to_integer(Value);
+                Value -> Value
         end.
 
 %%% Match serves as a partitioning function for consistent hashing. Node

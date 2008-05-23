@@ -5,6 +5,7 @@ home_dir = tempfile.mkdtemp("", "ringotest-") + '/'
 node_id = 0
 conn = None
 
+os.environ['RINGOHOST'] = 'RINGODBG'
 os.environ['RESYNC_INTERVAL'] = '10000'
 os.environ['CHECK_EXT_INTERVAL'] = '10000'
 os.environ['DOMAIN_CHUNK_MAX'] = str(100 * 1024**2)
