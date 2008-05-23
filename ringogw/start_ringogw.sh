@@ -9,5 +9,7 @@ then
 	echo "SCGI mode"
 fi
 
-PATH=.:$PATH erl +K true -smp on -sname ringogw -setcookie ringobingo -pa ../mochiweb/ebin -pa ../ring/ebin -pa ebin -pa src -boot ringogw -ringogw httpmode $MODE -ringogw port $PORT -ringogw docroot \"web\" -ringogw dynroot \"mon\" -kernel error_logger '{file, "ringogw.log"}' -eval "[handle_ring, handle_domains, handle_data]"
+export HEART_COMMAND="$0 $@"
+
+PATH=.:$PATH erl -heart -noshell -detached +K true -smp on -sname ringogw -setcookie ringobingo -pa ../mochiweb/ebin -pa ../ring/ebin -pa ebin -pa src -boot ringogw -ringogw httpmode $MODE -ringogw port $PORT -ringogw docroot \"web\" -ringogw dynroot \"mon\" -kernel error_logger '{file, "ringogw.log"}' -eval "[handle_ring, handle_domains, handle_data]"
 
