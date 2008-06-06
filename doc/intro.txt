@@ -1,0 +1,117 @@
+
+Ringo
+=====
+
+Ringo is an experimental, distributed, replicating key-value store based
+on consistent hashing and immutable data. Unlike many general-purpose
+databases, Ringo is designed for a specific use case: For archiving
+small (less than 4KB) or medium-size data items (<100MB) in real-time
+so that the data can survive K - 1 disk breaks, where K is the desired
+number of replicas, without any downtime, in a manner that scales to
+terabytes of data. In addition to storing, Ringo should be able to
+retrieve individual or small sets of data items with low latencies
+(<10ms) and provide a convenient on-disk format for bulk data access.
+
+Ringo is implemented in Erlang [Erlang]_, a functional language that is designed
+for building robust fault-tolerant distributed applications.
+
+API
+---
+
+Ringo supports the following operations on data, using a REST-style
+web interface.
+
+- Create a domain, which initializes a new set of items using a POST
+  request:
+  
+  http://ringo/mon/data/domain_name?create
+
+- Put an item to a domain, which appends a new key-value pair to an
+  existing domain with a POST request. The address encodes the key and
+  the request contains the corresponding value:
+
+  http://ringo/mon/data/domain_name/key
+
+- Get items from a domain, which returns all values for the given key
+  from the given domain with a GET request:
+
+  http://ringo/mon/data/domain_name/key
+
+Note that the above operations can only add new items, or access existing
+items in the system but never modify them. Furthermore, Ringo doesn't
+change or move data internally in any way once it has been written to
+disk. This should guarantee that Ringo never corrupts data. Even if the
+local filesystem corrupts, which Ringo uses to store its data, the data
+can be recovered from redundant copies on replica nodes.
+
+Distributed data storage
+------------------------
+
+Ringo is designed to work on a cluster of servers. It is based on
+consistent hashing, which connects many independent processes on many
+independent servers to a single consistent system. It is possible
+to add and remove servers from the system on the fly without any
+interruptions. This eases maintenance of the system and makes it
+fault-tolerant, as there aren't any single points of failure. As the
+system lacks a central bookkeeping mechanism, and it doesn't rely on any
+global data structures, Ringo is inherently scalable. Simple chunking
+mechanism takes care of load balancing and data distribution.
+
+Ringo shares many characteristics with Amazon Dynamo [Dynamo]_, Amazon's
+internal, non-public storage system. However, whereas Dynamo is designed
+for the needs of real-time web services, Ringo is leaned towards long-term
+data archival and analysis, where data may originate from web or mobile
+services in real-time.
+
+Efficient bulk data access
+--------------------------
+
+Ringo supports efficient bulk data access to the data through a direct,
+lockless access to the DB files. An interface to the raw data is
+provided for Disco [Disco]_, an implementation of the Map-Reduce
+framework for distributed computing, which makes it possible to process
+and analyze large-amounts of data stored in Ringo in an efficient
+manner. Ringo is thus especially suitable for Web services which receive
+seldomly changing data from users, and which need to generate reports,
+or to build models or indices periodically based on the user data or log
+files.
+
+At this point, Ringo is an experimental system and not suitable for
+production use as such. The largest Ringo deployment this far runs on
+30 servers, each having two 500GB hard disks, in a cluster maintained by
+the Data Insight team in NRC Palo Alto.
+
+Main features
+-------------
+
+- A clean REST-style Web interface to the data.
+
+- Fault-tolerant: Supports K-way redundancy.
+
+- Efficient data synchronization via hash trees.
+
+- Scales to terabytes of data and hundreds of individual disks.
+
+- Maintains inverted indices for all keys for fast access to data.
+
+- Disks and servers may be added to or removed from the system in a
+  straightforward manner, without any interruptions.
+
+- Raw data can be read efficienly through direct, lockless access to
+  the DB files.
+
+- Disco interface provided for DB files, for distributed data processing 
+  and analysis.
+
+- Separate Web APIs and a Web UI are provided for system monitoring and 
+  control.
+
+
+References
+----------
+
+.. [Erlang] http://www.erlang.org/
+.. [Dynamo] http://s3.amazonaws.com/AllThingsDistributed/sosp/amazon-dynamo-sosp2007.pdf
+.. [Disco] file://disco-intro.html
+
+Contact person: ville.h.tuulos@nokia.com

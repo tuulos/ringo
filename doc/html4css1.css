@@ -12,12 +12,17 @@ customize this style sheet.
 */
 
 body{
-        margin-left: 30px;
-	width: 750px;
-	text-align: justify;
+	text-align: center;
         color: #000000;
         font-family: Verdana, "Bitstream Vera Sans", sans-serif;
 	line-height: 1.4em;
+}
+
+.document{
+        width: 750px;
+        margin-left: auto;
+        margin-right: auto;
+	text-align: justify;
 }
 
 /* used to remove borders from tables and images */
@@ -146,12 +151,17 @@ div.system-message p.system-message-title {
 div.topic {
   margin: 2em }
 
+h1 { font-size: 120%; color: #333;}
+
 h1.section-subtitle, h2.section-subtitle, h3.section-subtitle,
 h4.section-subtitle, h5.section-subtitle, h6.section-subtitle {
   margin-top: 0.4em }
 
-h1.title {
-  text-align: center }
+h1.title { margin-bottom: 2em; margin-top: 2em; color: #8f138b;}
+
+.section h1 { font-size: 100%; color: #8f138b;}
+.fn-backref, .citation-reference, .reference { color: #488f13; }
+
 
 h2.subtitle {
   text-align: center }
