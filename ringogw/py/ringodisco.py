@@ -58,10 +58,11 @@ def ringo_reader(fd, sze, fname):
                 if not entry:
                         break
                 entryid, flags, key, val = entry
-                if entryid == prev_id:
-                        continue
                 if flags & 1 or flags & 2:
                         continue
+                if entryid == prev_id:
+                        continue
+                prev_id = entryid
                 yield key, val
 
 
