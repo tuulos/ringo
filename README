@@ -1,0 +1,75 @@
+
+Ringo - Distributed key/value storage for immutable data
+--------------------------------------------------------
+
+Ringo is an experimental, distributed, replicating key-value store based
+on consistent hashing and immutable data. Unlike many general-purpose
+databases, Ringo is designed for a specific use case: For archiving
+small (less than 4KB) or medium-size data items (<100MB) in real-time
+so that the data can survive K - 1 disk breaks, where K is the desired
+number of replicas, without any downtime, in a manner that scales to
+terabytes of data. In addition to storing, Ringo should be able to
+retrieve individual or small sets of data items with low latencies
+(<10ms) and provide a convenient on-disk format for bulk data access.
+
+WARNING: Ringo should not be used yet as a primary storage for critical
+data. Due to the fact that Ringo treats all data immutable, data
+corruption or loss should be improbable. However, Ringo needs more
+testing in real-world settings before we can be reasonably sure that it
+works as advertised. To make this happen, feel free to try it out, adapt 
+it to your needs, and report your experiences!
+
+
+Requirements
+''''''''''''
+
+- Erlang R12B or newer
+- Lighttpd (or other web server that supports SCGI)
+- Python (optional, needed to run the test harness)
+
+
+Directories
+'''''''''''
+
+doc/         Documentation
+
+ring/        Ringo backend
+ring/bfile   High-performance replacement for the Erlang's standard file 
+             module
+ring/src     Backend sources
+ring/test    Test harness
+
+ringogw/     Ringo web frontend
+ringogw/src  Frontend sources
+ringogw/web  Web interface
+ringogw/py   Python interfaces for the Ringo frontend and for the Disco 
+             map/reduce framework
+
+
+Compiling
+'''''''''
+
+cd ringo
+./compile.sh
+
+
+Usage
+'''''
+
+
+
+Running the Test Harness
+''''''''''''''''''''''''
+
+
+
+
+
+
+
+
+
+
+
+
+

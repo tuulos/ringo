@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ -z $1 ]; then
-	echo "Usage: create_node.sh [host] [ringo_root]"
+	echo "Usage: create_node.sh [host] [ringo_data]"
 	exit 1
 fi
 

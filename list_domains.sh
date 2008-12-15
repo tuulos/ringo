@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ -z $1 ]; then
-	echo "Usage: list_domains.sh [node] [ringo_root]"
+	echo "Usage: list_domains.sh [node] [ringo_data]"
 	exit 1
 fi
 
