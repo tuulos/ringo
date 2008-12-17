@@ -115,8 +115,10 @@ ringo/ringogw/start_ringogw.sh
 
 Now you should see the status page at http://localhost:15000. On the
 status page, you can click nodes on the leftmost panel to see domains
-that they contain. You can click a domain on the middle panel to see
-its replicas. By clicking a replica, you can see its status.
+that they contain. You can click a domain on the middle panel to see its
+replicas. By clicking a replica, you can see its status. You might need
+to wait for 10 seconds or so, and reload the page, to see new nodes and
+domains appear.
 
 
 Usage
