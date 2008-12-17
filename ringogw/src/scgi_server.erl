@@ -40,7 +40,7 @@
 
 -define(HTTP_HEADER(X), ["HTTP/1.1 200 OK\n"
                      "Status: 200 OK\n"
-                     "Content-type:", X, "\r\n"]).
+                     "Content-type:", X, "\n\n"]).
 
 % scgi_server external interface
 
