@@ -1,6 +1,6 @@
 
 Ringo - Distributed key/value storage for immutable data
---------------------------------------------------------
+========================================================
 
 Ringo is an experimental, distributed, replicating key-value store based
 on consistent hashing and immutable data. Unlike many general-purpose
