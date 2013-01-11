@@ -178,3 +178,9 @@ ville.h.tuulos -a- nokia.com
 
 or on the IRC channel #discoproject at Freenode.
 
+
+
+.. image:: https://d2weczhvl823v0.cloudfront.net/tuulos/ringo/trend.png
+   :alt: Bitdeli badge
+   :target: https://bitdeli.com/free
+
